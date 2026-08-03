@@ -1,0 +1,238 @@
+#include "raylib.h"
+#include <string>
+#include <vector>
+
+// Game States
+enum GameState {
+    STATE_MAIN_MENU,
+    STATE_CHARACTER_CREATION,
+    STATE_GAMEPLAY
+};
+
+// Character Origin / Classes
+struct CharacterClass {
+    std::string name;
+    std::string description;
+    int baseStr, baseDex, baseInt, baseFth;
+};
+
+// Player Character Profile Data
+struct PlayerProfile {
+    char name[32] = "Aethelgard";
+    int selectedClassIndex = 0;
+    int selectedRegionIndex = 0;
+    int str = 10, dex = 10, intel = 10, fth = 10;
+    int availableAttributePoints = 10;
+};
+
+// Helper to draw clean hoverable buttons
+bool DrawButton(Rectangle bounds, const char* text, Color baseColor, Color hoverColor) {
+    Vector2 mousePoint = GetMousePosition();
+    bool isHovered = CheckCollisionPointRec(mousePoint, bounds);
+    
+    DrawRectangleRec(bounds, isHovered ? hoverColor : baseColor);
+    DrawRectangleLinesEx(bounds, 2, isHovered ? RAYWHITE : DARKGRAY);
+    
+    int fontSize = 20;
+    int textWidth = MeasureText(text, fontSize);
+    DrawText(text, bounds.x + (bounds.width - textWidth) / 2, bounds.y + (bounds.height - fontSize) / 2, fontSize, RAYWHITE);
+    
+    return isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+}
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Realm of the Shattered Sun");
+    SetTargetFPS(60);
+
+    GameState currentState = STATE_MAIN_MENU;
+    PlayerProfile player;
+
+    // Class Definitions
+    std::vector<CharacterClass> classes = {
+        {"Spellblade", "Weaves elemental spells directly into swift sword strikes.", 8, 12, 14, 6},
+        {"Paladin", "Heavy armor combatant powered by holy radiant energy.", 14, 6, 6, 14},
+        {"Ranger", "Master of bowcraft, traps, and shadow stepping.", 6, 15, 8, 8},
+        {"Alchemist", "Utilizes volatile brews and mid-fight mutations.", 8, 8, 14, 10}
+    };
+
+    std::vector<std::string> regions = {
+        "High Spire of Aethelgard",
+        "Black-Mire Swamps",
+        "Iron Dunes of Oakhaven"
+    };
+
+    // Text Input state
+    int letterCount = 10; // Initial default name length
+    bool nameInputActive = false;
+
+    while (!WindowShouldClose()) {
+        // ==========================================
+        // UPDATE LOGIC
+        // ==========================================
+        if (currentState == STATE_CHARACTER_CREATION) {
+            // Text Input Handling
+            if (nameInputActive) {
+                int key = GetCharPressed();
+                while (key > 0) {
+                    if ((key >= 32) && (key <= 125) && (letterCount < 31)) {
+                        player.name[letterCount] = (char)key;
+                        player.name[letterCount + 1] = '\0';
+                        letterCount++;
+                    }
+                    key = GetCharPressed();
+                }
+
+                if (IsKeyPressed(KEY_BACKSPACE)) {
+                    letterCount--;
+                    if (letterCount < 0) letterCount = 0;
+                    player.name[letterCount] = '\0';
+                }
+            }
+        }
+
+        // ==========================================
+        // DRAWING LOGIC
+        // ==========================================
+        BeginDrawing();
+        ClearBackground(GetColor(0x121216FF)); // Deep dark background
+
+        switch (currentState) {
+            case STATE_MAIN_MENU: {
+                // Title
+                DrawText("VETHORIA", screenWidth / 2 - MeasureText("VETHORIA", 60) / 2, 120, 60, GOLD);
+                DrawText("REALM OF THE SHATTERED SUN", screenWidth / 2 - MeasureText("REALM OF THE SHATTERED SUN", 20) / 2, 190, 20, LIGHTGRAY);
+
+                // Menu Buttons
+                if (DrawButton({ (float)screenWidth / 2 - 125, 300, 250, 50 }, "NEW GAME", MAROON, RED)) {
+                    currentState = STATE_CHARACTER_CREATION;
+                }
+                if (DrawButton({ (float)screenWidth / 2 - 125, 370, 250, 50 }, "LOAD GAME", DARKGRAY, GRAY)) {
+                    // Load logic placeholder
+                }
+                if (DrawButton({ (float)screenWidth / 2 - 125, 440, 250, 50 }, "EXIT", DARKGRAY, GRAY)) {
+                    CloseWindow();
+                    return 0;
+                }
+
+                DrawText("v0.1.0 - Raylib C++ Engine", 10, screenHeight - 30, 16, GRAY);
+            } break;
+
+            case STATE_CHARACTER_CREATION: {
+                DrawText("CHARACTER CREATION", 40, 30, 30, GOLD);
+                DrawLine(40, 70, screenWidth - 40, 70, GRAY);
+
+                // --- 1. NAME INPUT SECTION ---
+                DrawText("Hero Name:", 40, 95, 20, RAYWHITE);
+                Rectangle nameBox = { 170, 85, 300, 40 };
+                
+                if (CheckCollisionPointRec(GetMousePosition(), nameBox) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    nameInputActive = true;
+                }
+                DrawRectangleRec(nameBox, nameInputActive ? GetColor(0x2A2A35FF) : GetColor(0x1E1E24FF));
+                DrawRectangleLinesEx(nameBox, 2, nameInputActive ? GOLD : GRAY);
+                DrawText(player.name, nameBox.x + 10, nameBox.y + 10, 20, RAYWHITE);
+
+                // --- 2. CLASS SELECTION ---
+                DrawText("Select Class:", 40, 150, 20, RAYWHITE);
+                for (size_t i = 0; i < classes.size(); i++) {
+                    Rectangle classBtn = { 40.0f + (i * 150.0f), 180.0f, 140.0f, 40.0f };
+                    Color btnColor = (player.selectedClassIndex == (int)i) ? MAROON : DARKGRAY;
+                    
+                    if (DrawButton(classBtn, classes[i].name.c_str(), btnColor, RED)) {
+                        player.selectedClassIndex = i;
+                        // Reset base stats to class defaults
+                        player.str = classes[i].baseStr;
+                        player.dex = classes[i].baseDex;
+                        player.intel = classes[i].baseInt;
+                        player.fth = classes[i].baseFth;
+                        player.availableAttributePoints = 10;
+                    }
+                }
+
+                // Class Description Box
+                DrawRectangle(40, 235, 590, 60, GetColor(0x1E1E24FF));
+                DrawRectangleLines(40, 235, 590, 60, DARKGRAY);
+                DrawText(classes[player.selectedClassIndex].description.c_str(), 50, 255, 16, LIGHTGRAY);
+
+                // --- 3. ATTRIBUTE POINT ALLOCATION ---
+                DrawText("Attributes", 40, 320, 22, GOLD);
+                DrawText(TextFormat("Points Remaining: %d", player.availableAttributePoints), 200, 322, 18, GREEN);
+
+                auto DrawStatRow = [&](int yPos, const char* label, int& statValue) {
+                    DrawText(TextFormat("%s: %d", label, statValue), 40, yPos, 20, RAYWHITE);
+                    
+                    // Minus Button
+                    if (DrawButton({ 220, (float)yPos - 5, 30, 30 }, "-", DARKGRAY, RED)) {
+                        int base = 0;
+                        if (std::string(label) == "STR") base = classes[player.selectedClassIndex].baseStr;
+                        if (std::string(label) == "DEX") base = classes[player.selectedClassIndex].baseDex;
+                        if (std::string(label) == "INT") base = classes[player.selectedClassIndex].baseInt;
+                        if (std::string(label) == "FTH") base = classes[player.selectedClassIndex].baseFth;
+
+                        if (statValue > base) {
+                            statValue--;
+                            player.availableAttributePoints++;
+                        }
+                    }
+                    
+                    // Plus Button
+                    if (DrawButton({ 260, (float)yPos - 5, 30, 30 }, "+", DARKGRAY, GREEN)) {
+                        if (player.availableAttributePoints > 0) {
+                            statValue++;
+                            player.availableAttributePoints--;
+                        }
+                    }
+                };
+
+                DrawStatRow(360, "STR", player.str);
+                DrawStatRow(400, "DEX", player.dex);
+                DrawStatRow(440, "INT", player.intel);
+                DrawStatRow(480, "FTH", player.fth);
+
+                // --- 4. STARTING REGION SELECTION ---
+                DrawText("Starting Origin Region:", 680, 150, 20, RAYWHITE);
+                for (size_t i = 0; i < regions.size(); i++) {
+                    Rectangle regBtn = { 680.0f, 180.0f + (i * 55.0f), 350.0f, 45.0f };
+                    Color btnColor = (player.selectedRegionIndex == (int)i) ? GetColor(0x3A2E39FF) : DARKGRAY;
+                    
+                    if (DrawButton(regBtn, regions[i].c_str(), btnColor, MAROON)) {
+                        player.selectedRegionIndex = i;
+                    }
+                }
+
+                // --- NAVIGATION BUTTONS ---
+                if (DrawButton({ 40, (float)screenHeight - 70, 150, 45 }, "BACK", DARKGRAY, GRAY)) {
+                    currentState = STATE_MAIN_MENU;
+                }
+
+                if (DrawButton({ (float)screenWidth - 220, (float)screenHeight - 70, 180, 45 }, "BEGIN JOURNEY", MAROON, RED)) {
+                    currentState = STATE_GAMEPLAY;
+                }
+            } break;
+
+            case STATE_GAMEPLAY: {
+                DrawText("ENTERING THE REALM OF VETHORIA...", screenWidth / 2 - MeasureText("ENTERING THE REALM OF VETHORIA...", 24) / 2, 200, 24, GOLD);
+                
+                // Character Summary
+                DrawText(TextFormat("Hero: %s", player.name), 100, 300, 20, RAYWHITE);
+                DrawText(TextFormat("Class: %s", classes[player.selectedClassIndex].name.c_str()), 100, 330, 20, RAYWHITE);
+                DrawText(TextFormat("Origin: %s", regions[player.selectedRegionIndex].c_str()), 100, 360, 20, RAYWHITE);
+                
+                DrawText(TextFormat("Stats - STR: %d | DEX: %d | INT: %d | FTH: %d", player.str, player.dex, player.intel, player.fth), 100, 410, 20, GREEN);
+
+                if (DrawButton({ 100, 500, 200, 45 }, "RETURN TO MENU", DARKGRAY, GRAY)) {
+                    currentState = STATE_MAIN_MENU;
+                }
+            } break;
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+
+}
