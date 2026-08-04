@@ -1,0 +1,320 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Enum for Combat Stances
+enum Stance {
+    STANCE_VANGUARD, // Swift Light Blades & Heavy Cleaves
+    STANCE_AETHER    // Magic Bolts & High-Speed Shadow-Steps
+};
+
+// Player Combat State
+enum CombatState {
+    STATE_IDLE,
+    STATE_MOVING,
+    STATE_ATTACKING,
+    STATE_PARRYING,
+    STATE_DODGING
+};
+
+// Attack Hitbox Data Structure
+struct Hitbox {
+    Rectangle rect;
+    float damage;
+    float knockback;
+    bool active;
+    float duration;
+    float timer;
+};
+
+// Projectile Structure for Aether Stance
+struct Projectile {
+    Vector2 position;
+    Vector2 velocity;
+    float radius;
+    float damage;
+    bool active;
+    float lifetime;
+};
+
+// Dummy Enemy Structure for Testing Combat Mechanics
+struct DummyEnemy {
+    Vector2 position;
+    float radius;
+    float health;
+    float maxHealth;
+    Color color;
+    float hitStunTimer;
+};
+
+// Player Character Engine
+struct HeroCharacter {
+    Vector2 position = { 400.0f, 300.0f };
+    Vector2 velocity = { 0.0f, 0.0f };
+    float speed = 250.0f;
+    Vector2 facingDirection = { 1.0f, 0.0f };
+
+    Stance currentStance = STANCE_VANGUARD;
+    CombatState currentState = STATE_IDLE;
+
+    // Attributes
+    float health = 100.0f;
+    float maxHealth = 100.0f;
+    float aetherGauge = 0.0f;
+    float maxAether = 100.0f;
+
+    // Combo Tracker
+    int comboStage = 0; // 0, 1, 2 for 3-hit combos
+    float comboResetTimer = 0.0f;
+    float attackCooldown = 0.0f;
+    float stateTimer = 0.0f;
+
+    // Parry Window
+    float parryWindowTimer = 0.0f;
+
+    Hitbox currentHitbox = { { 0, 0, 0, 0 }, 0, 0, false, 0, 0 };
+};
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Fighting Style & Combat Engine");
+    SetTargetFPS(60);
+
+    HeroCharacter player;
+    DummyEnemy dummy = { { 800.0f, 360.0f }, 30.0f, 150.0f, 150.0f, RED, 0.0f };
+    
+    std::vector<Projectile> projectiles;
+    bool debugDrawHitboxes = true;
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // =========================================================================
+        // 1. INPUT & STANCE SWAPPING
+        // =========================================================================
+        
+        // Toggle Debug View (Key: H)
+        if (IsKeyPressed(KEY_H)) debugDrawHitboxes = !debugDrawHitboxes;
+
+        // Mid-Combo Stance Swap
+        if (IsKeyPressed(KEY_SPACE) && player.currentState != STATE_DODGING) {
+            player.currentStance = (player.currentStance == STANCE_VANGUARD) ? STANCE_AETHER : STANCE_VANGUARD;
+            player.comboStage = 0; // Reset combo string on stance change
+        }
+
+        // Handle Movement Input (Disabled while attacking/parrying)
+        Vector2 inputDir = { 0.0f, 0.0f };
+        if (player.currentState == STATE_IDLE || player.currentState == STATE_MOVING) {
+            if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+            if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+            if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+            if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+            if (Vector2Length(inputDir) > 0) {
+                inputDir = Vector2Normalize(inputDir);
+                player.facingDirection = inputDir;
+                player.currentState = STATE_MOVING;
+            } else {
+                player.currentState = STATE_IDLE;
+            }
+
+            player.position = Vector2Add(player.position, Vector2Scale(inputDir, player.speed * deltaTime));
+        }
+
+        // =========================================================================
+        // 2. COMBAT ACTIONS & ATTACK ENGINE
+        // =========================================================================
+
+        // Timers Update
+        if (player.comboResetTimer > 0) {
+            player.comboResetTimer -= deltaTime;
+            if (player.comboResetTimer <= 0) player.comboStage = 0;
+        }
+
+        if (player.attackCooldown > 0) player.attackCooldown -= deltaTime;
+
+        // --- ATTACK EXECUTION (Left Mouse Button) ---
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && player.attackCooldown <= 0 && player.currentState != STATE_DODGING) {
+            player.currentState = STATE_ATTACKING;
+            player.attackCooldown = 0.35f;
+            player.comboResetTimer = 0.8f; // Window to queue next attack in combo
+
+            if (player.currentStance == STANCE_VANGUARD) {
+                // Vanguard 3-Hit Melee Combo
+                float hitDamage = 15.0f + (player.comboStage * 10.0f); // Damage scales per hit
+                float reach = 60.0f + (player.comboStage * 15.0f);
+
+                Vector2 hitboxPos = Vector2Add(player.position, Vector2Scale(player.facingDirection, 35.0f));
+                
+                player.currentHitbox = {
+                    { hitboxPos.x - reach/2, hitboxPos.y - reach/2, reach, reach },
+                    hitDamage,
+                    150.0f + (player.comboStage * 100.0f),
+                    true,
+                    0.15f, // Hitbox duration in seconds
+                    0.15f
+                };
+
+                player.comboStage = (player.comboStage + 1) % 3;
+                player.aetherGauge = math.min(player.maxAether, player.aetherGauge + 15.0f);
+
+            } else if (player.currentStance == STANCE_AETHER) {
+                // Aether Stance Ranged Magic Bolt
+                Projectile bolt;
+                bolt.position = player.position;
+                bolt.velocity = Vector2Scale(player.facingDirection, 600.0f);
+                bolt.radius = 8.0f;
+                bolt.damage = 22.0f;
+                bolt.active = true;
+                bolt.lifetime = 2.0f;
+
+                projectiles.push_back(bolt);
+                player.aetherGauge = math.min(player.maxAether, player.aetherGauge + 8.0f);
+            }
+        }
+
+        // --- PARRY MECHANIC (Right Mouse Button - Vanguard Stance Only) ---
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && player.currentStance == STANCE_VANGUARD && player.currentState != STATE_PARRYING) {
+            player.currentState = STATE_PARRYING;
+            player.stateTimer = 0.4f;
+            player.parryWindowTimer = 0.2f; // Active defensive parry frames
+        }
+
+        // Update Hitbox Lifespans
+        if (player.currentHitbox.active) {
+            player.currentHitbox.timer -= deltaTime;
+            if (player.currentHitbox.timer <= 0) {
+                player.currentHitbox.active = false;
+            }
+        }
+
+        // Update Parry Timers & Reset State
+        if (player.currentState == STATE_PARRYING) {
+            player.stateTimer -= deltaTime;
+            player.parryWindowTimer -= deltaTime;
+            if (player.stateTimer <= 0) player.currentState = STATE_IDLE;
+        }
+
+        if (player.currentState == STATE_ATTACKING && player.attackCooldown <= 0.15f) {
+            player.currentState = STATE_IDLE;
+        }
+
+        // =========================================================================
+        // 3. PROJECTILE & HIT DETECTION PHYSICS
+        // =========================================================================
+
+        // Update Projectiles
+        for (size_t i = 0; i < projectiles.size(); i++) {
+            if (!projectiles[i].active) continue;
+
+            projectiles[i].position = Vector2Add(projectiles[i].position, Vector2Scale(projectiles[i].velocity, deltaTime));
+            projectiles[i].lifetime -= deltaTime;
+
+            if (projectiles[i].lifetime <= 0) projectiles[i].active = false;
+
+            // Check Collision with Dummy Enemy
+            if (CheckCollisionCircles(projectiles[i].position, projectiles[i].radius, dummy.position, dummy.radius)) {
+                dummy.health -= projectiles[i].damage;
+                dummy.hitStunTimer = 0.2f;
+                projectiles[i].active = false;
+            }
+        }
+
+        // Melee Hitbox Collisions with Dummy
+        if (player.currentHitbox.active) {
+            if (CheckCollisionCircleRec(dummy.position, dummy.radius, player.currentHitbox.rect)) {
+                dummy.health -= player.currentHitbox.damage;
+                dummy.hitStunTimer = 0.25f;
+                
+                // Knockback physics
+                dummy.position = Vector2Add(dummy.position, Vector2Scale(player.facingDirection, player.currentHitbox.knockback * deltaTime));
+                
+                player.currentHitbox.active = false; // Prevent multi-hitting on same frame
+            }
+        }
+
+        // Reset Dummy Health
+        if (dummy.hitStunTimer > 0) dummy.hitStunTimer -= deltaTime;
+        if (dummy.health <= 0) dummy.health = dummy.maxHealth;
+
+        // =========================================================================
+        // 4. RENDERING & UI PASS
+        // =========================================================================
+        BeginDrawing();
+        ClearBackground(GetColor(0x16161CFF));
+
+        // Draw Arena Grid
+        for (int i = 0; i < screenWidth; i += 60) DrawLine(i, 0, i, screenHeight, GetColor(0x22222CFF));
+        for (int i = 0; i < screenHeight; i += 60) DrawLine(0, i, screenWidth, i, GetColor(0x22222CFF));
+
+        // --- DRAW DUMMY ENEMY ---
+        Color dummyColor = (dummy.hitStunTimer > 0) ? WHITE : RED;
+        DrawCircleV(dummy.position, dummy.radius, dummy.color);
+        DrawCircleLines(dummy.position.x, dummy.position.y, dummy.radius, dummyColor);
+        
+        // Dummy HP Bar
+        DrawRectangle(dummy.position.x - 30, dummy.position.y - 45, 60, 6, DARKGRAY);
+        DrawRectangle(dummy.position.x - 30, dummy.position.y - 45, (dummy.health / dummy.maxHealth) * 60, 6, RED);
+
+        // --- DRAW PROJECTILES ---
+        for (const auto& proj : projectiles) {
+            if (proj.active) {
+                DrawCircleV(proj.position, proj.radius, SKYBLUE);
+                DrawCircleGradient(proj.position.x, proj.position.y, proj.radius * 2, SKYBLUE, BLANK);
+            }
+        }
+
+        // --- DRAW HERO ---
+        Color heroColor = (player.currentStance == STANCE_VANGUARD) ? GOLD : SKYBLUE;
+        
+        // Render Parry Shield Visual
+        if (player.currentState == STATE_PARRYING) {
+            DrawCircleLines(player.position.x, player.position.y, 35.0f, YELLOW);
+        }
+
+        DrawCircleV(player.position, 22.0f, heroColor);
+        
+        // Facing Indicator Line
+        Vector2 lineEnd = Vector2Add(player.position, Vector2Scale(player.facingDirection, 30.0f));
+        DrawLineEx(player.position, lineEnd, 4.0f, RAYWHITE);
+
+        // --- DEBUG HITBOX OVERLAY ---
+        if (debugDrawHitboxes && player.currentHitbox.active) {
+            DrawRectangleRec(player.currentHitbox.rect, Fade(RED, 0.4f));
+            DrawRectangleLinesEx(player.currentHitbox.rect, 2, RED);
+        }
+
+        // --- HUD OVERLAY ---
+        DrawRectangle(20, 20, 320, 130, GetColor(0x1E1E28FF));
+        DrawRectangleLines(20, 20, 320, 130, GRAY);
+
+        // Health Bar
+        DrawText("HP", 35, 35, 18, RAYWHITE);
+        DrawRectangle(75, 35, 240, 16, DARKGRAY);
+        DrawRectangle(75, 35, (player.health / player.maxHealth) * 240, 16, GREEN);
+
+        // Aether Energy Meter
+        DrawText("AETHER", 35, 60, 14, SKYBLUE);
+        DrawRectangle(75, 62, 240, 12, DARKGRAY);
+        DrawRectangle(75, 62, (player.aetherGauge / player.maxAether) * 240, 12, SKYBLUE);
+
+        // Stance & Combo Counter Readout
+        const char* stanceText = (player.currentStance == STANCE_VANGUARD) ? "STANCE: VANGUARD (MELEE)" : "STANCE: AETHER (RANGED)";
+        DrawText(stanceText, 35, 88, 16, heroColor);
+        
+        if (player.comboStage > 0) {
+            DrawText(TextFormat("COMBO: %d-HIT", player.comboStage), 35, 110, 18, ORANGE);
+        }
+
+        // Control Prompts
+        DrawText("[WASD] Move | [LMB] Attack | [RMB] Parry | [SPACE] Switch Stance | [H] Toggle Debug Bounds", 20, screenHeight - 30, 16, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
