@@ -1,0 +1,333 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Enum for Combat Stances
+enum Stance {
+    STANCE_VANGUARD, // Swift Light Blades & Heavy Cleaves
+    STANCE_AETHER    // Magic Bolts & High-Speed Shadow-Steps
+};
+
+// Tutorial Stages
+enum TutorialStage {
+    TUTORIAL_MOVEMENT,
+    TUTORIAL_MELEE_COMBO,
+    TUTORIAL_STANCE_SWAP,
+    TUTORIAL_RANGED_ATTACK,
+    TUTORIAL_PARRY_TEST,
+    TUTORIAL_COMPLETE
+};
+
+// Attack Hitbox Data Structure
+struct Hitbox {
+    Rectangle rect;
+    float damage;
+    float knockback;
+    bool active;
+    float timer;
+};
+
+// Projectile Structure
+struct Projectile {
+    Vector2 position;
+    Vector2 velocity;
+    float radius;
+    float damage;
+    bool active;
+    float lifetime;
+};
+
+// Training Dummy / Master Instructor NPC
+struct MasterInstructor {
+    Vector2 position = { 850.0f, 360.0f };
+    float radius = 30.0f;
+    float health = 200.0f;
+    float maxHealth = 200.0f;
+    bool isAttacking = false;
+    float attackTimer = 0.0f;
+    float attackInterval = 2.5f;
+    Hitbox attackHitbox = { { 0, 0, 0, 0 }, 10.0f, 0, false, 0 };
+};
+
+// Hero Player Character
+struct HeroCharacter {
+    Vector2 position = { 300.0f, 360.0f };
+    float speed = 250.0f;
+    Vector2 facingDirection = { 1.0f, 0.0f };
+
+    Stance currentStance = STANCE_VANGUARD;
+    
+    float health = 100.0f;
+    float maxHealth = 100.0f;
+    float aetherGauge = 0.0f;
+    float maxAether = 100.0f;
+
+    int comboStage = 0;
+    float comboResetTimer = 0.0f;
+    float attackCooldown = 0.0f;
+
+    bool isParrying = false;
+    float parryTimer = 0.0f;
+
+    Hitbox currentHitbox = { { 0, 0, 0, 0 }, 0, 0, false, 0 };
+};
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Fighting Style Tutorial");
+    SetTargetFPS(60);
+
+    HeroCharacter player;
+    MasterInstructor master;
+    std::vector<Projectile> projectiles;
+
+    TutorialStage currentStage = TUTORIAL_MOVEMENT;
+
+    // Progression Trackers for Requirements
+    int successfulMeleeHits = 0;
+    int successfulStanceSwaps = 0;
+    int successfulRangedHits = 0;
+    int successfulParries = 0;
+
+    // Movement Objective Zone
+    Rectangle alignmentZone = { 700, 310, 100, 100 };
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // =========================================================================
+        // 1. INPUT & PLAYER CONTROLS
+        // =========================================================================
+        
+        // Stance Swap Input
+        if (IsKeyPressed(KEY_SPACE)) {
+            player.currentStance = (player.currentStance == STANCE_VANGUARD) ? STANCE_AETHER : STANCE_VANGUARD;
+            player.comboStage = 0;
+
+            if (currentStage == TUTORIAL_STANCE_SWAP) {
+                successfulStanceSwaps++;
+                if (successfulStanceSwaps >= 2) {
+                    currentStage = TUTORIAL_RANGED_ATTACK;
+                    player.currentStance = STANCE_AETHER; // Force Aether for next trial
+                }
+            }
+        }
+
+        // Movement Physics
+        Vector2 inputDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+        if (Vector2Length(inputDir) > 0) {
+            inputDir = Vector2Normalize(inputDir);
+            player.facingDirection = inputDir;
+            player.position = Vector2Add(player.position, Vector2Scale(inputDir, player.speed * deltaTime));
+        }
+
+        // --- ATTACK LOGIC (LMB) ---
+        if (player.attackCooldown > 0) player.attackCooldown -= deltaTime;
+        if (player.comboResetTimer > 0) {
+            player.comboResetTimer -= deltaTime;
+            if (player.comboResetTimer <= 0) player.comboStage = 0;
+        }
+
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && player.attackCooldown <= 0) {
+            player.attackCooldown = 0.35f;
+            player.comboResetTimer = 0.8f;
+
+            if (player.currentStance == STANCE_VANGUARD) {
+                float reach = 65.0f + (player.comboStage * 10.0f);
+                Vector2 hitboxPos = Vector2Add(player.position, Vector2Scale(player.facingDirection, 35.0f));
+                
+                player.currentHitbox = {
+                    { hitboxPos.x - reach/2, hitboxPos.y - reach/2, reach, reach },
+                    15.0f + (player.comboStage * 10.0f),
+                    100.0f,
+                    true,
+                    0.15f
+                };
+
+                player.comboStage = (player.comboStage + 1) % 3;
+
+            } else if (player.currentStance == STANCE_AETHER) {
+                Projectile bolt;
+                bolt.position = player.position;
+                bolt.velocity = Vector2Scale(player.facingDirection, 650.0f);
+                bolt.radius = 8.0f;
+                bolt.damage = 20.0f;
+                bolt.active = true;
+                bolt.lifetime = 2.0f;
+                projectiles.push_back(bolt);
+            }
+        }
+
+        // --- PARRY LOGIC (RMB) ---
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && player.currentStance == STANCE_VANGUARD && !player.isParrying) {
+            player.isParrying = true;
+            player.parryTimer = 0.35f; // Active deflection window
+        }
+
+        if (player.isParrying) {
+            player.parryTimer -= deltaTime;
+            if (player.parryTimer <= 0) player.isParrying = false;
+        }
+
+        // =========================================================================
+        // 2. TUTORIAL STAGE PROGRESSION & VALIDATION
+        // =========================================================================
+        
+        // Trial 1: Movement Check
+        if (currentStage == TUTORIAL_MOVEMENT) {
+            if (CheckCollisionPointRec(player.position, alignmentZone)) {
+                currentStage = TUTORIAL_MELEE_COMBO;
+            }
+        }
+
+        // Active Master Attacks for Parry Trial
+        if (currentStage == TUTORIAL_PARRY_TEST) {
+            master.attackTimer += deltaTime;
+            if (master.attackTimer >= master.attackInterval) {
+                master.attackTimer = 0.0f;
+                master.isAttacking = true;
+                
+                // Spawn strike toward player
+                Vector2 strikePos = Vector2Add(master.position, Vector2Scale(Vector2Normalize(Vector2Subtract(player.position, master.position)), 30.0f));
+                master.attackHitbox = { { strikePos.x - 30, strikePos.y - 30, 60, 60 }, 10.0f, 0, true, 0.4f };
+            }
+        }
+
+        // Update Hitbox Lifespans & Collisions
+        if (player.currentHitbox.active) {
+            player.currentHitbox.timer -= deltaTime;
+            if (player.currentHitbox.timer <= 0) player.currentHitbox.active = false;
+
+            // Collision with Master
+            if (CheckCollisionCircleRec(master.position, master.radius, player.currentHitbox.rect)) {
+                player.currentHitbox.active = false;
+
+                if (currentStage == TUTORIAL_MELEE_COMBO) {
+                    successfulMeleeHits++;
+                    if (successfulMeleeHits >= 3) {
+                        currentStage = TUTORIAL_STANCE_SWAP;
+                    }
+                }
+            }
+        }
+
+        // Projectile Collisions
+        for (auto& proj : projectiles) {
+            if (!proj.active) continue;
+            proj.position = Vector2Add(proj.position, Vector2Scale(proj.velocity, deltaTime));
+            
+            if (CheckCollisionCircles(proj.position, proj.radius, master.position, master.radius)) {
+                proj.active = false;
+
+                if (currentStage == TUTORIAL_RANGED_ATTACK) {
+                    successfulRangedHits++;
+                    if (successfulRangedHits >= 3) {
+                        currentStage = TUTORIAL_PARRY_TEST;
+                        player.currentStance = STANCE_VANGUARD; // Force Vanguard for Parry
+                    }
+                }
+            }
+        }
+
+        // Parry Collision Validation
+        if (master.attackHitbox.active) {
+            master.attackHitbox.timer -= deltaTime;
+            if (master.attackHitbox.timer <= 0) master.attackHitbox.active = false;
+
+            // Check if player parried master's attack
+            if (player.isParrying && CheckCollisionCircleRec(player.position, 30.0f, master.attackHitbox.rect)) {
+                master.attackHitbox.active = false;
+                successfulParries++;
+                
+                if (successfulParries >= 2) {
+                    currentStage = TUTORIAL_COMPLETE;
+                }
+            }
+        }
+
+        // =========================================================================
+        // 3. RENDERING & UI INSTRUCTIONS
+        // =========================================================================
+        BeginDrawing();
+        ClearBackground(GetColor(0x141419FF));
+
+        // Arena Boundaries & Alignment Zone
+        if (currentStage == TUTORIAL_MOVEMENT) {
+            DrawRectangleRec(alignmentZone, Fade(GOLD, 0.2f));
+            DrawRectangleLinesEx(alignmentZone, 2, GOLD);
+            DrawText("STEP HERE", alignmentZone.x + 10, alignmentZone.y + 40, 16, GOLD);
+        }
+
+        // Draw Master Instructor NPC
+        DrawCircleV(master.position, master.radius, GetColor(0x3A3A4AFF));
+        DrawCircleLines(master.position.x, master.position.y, master.radius, GOLD);
+        DrawText("MASTER INSTRUCTOR", master.position.x - 65, master.position.y - 50, 14, LIGHTGRAY);
+
+        // Draw Master Attack Visual
+        if (master.attackHitbox.active) {
+            DrawRectangleRec(master.attackHitbox.rect, Fade(RED, 0.5f));
+        }
+
+        // Draw Player Character
+        Color playerColor = (player.currentStance == STANCE_VANGUARD) ? GOLD : SKYBLUE;
+        if (player.isParrying) DrawCircleLines(player.position.x, player.position.y, 35.0f, YELLOW);
+        
+        DrawCircleV(player.position, 22.0f, playerColor);
+        DrawLineEx(player.position, Vector2Add(player.position, Vector2Scale(player.facingDirection, 30.0f)), 3.0f, RAYWHITE);
+
+        // Render Player Hitbox & Projectiles
+        if (player.currentHitbox.active) DrawRectangleRec(player.currentHitbox.rect, Fade(ORANGE, 0.4f));
+        for (const auto& proj : projectiles) {
+            if (proj.active) DrawCircleV(proj.position, proj.radius, SKYBLUE);
+        }
+
+        // --- TUTORIAL TOP BANNER HUD ---
+        DrawRectangle(0, 0, screenWidth, 100, GetColor(0x1E1E26FF));
+        DrawLine(0, 100, screenWidth, 100, GOLD);
+
+        switch (currentStage) {
+            case TUTORIAL_MOVEMENT:
+                DrawText("TRIAL 1: MOVEMENT & ALIGNMENT", 40, 25, 24, GOLD);
+                DrawText("Use [W][A][S][D] keys to navigate into the golden target zone.", 40, 60, 18, RAYWHITE);
+                break;
+
+            case TUTORIAL_MELEE_COMBO:
+                DrawText("TRIAL 2: VANGUARD MELEE COMBO", 40, 25, 24, GOLD);
+                DrawText(TextFormat("Press [LMB] repeatedly to land a 3-Hit Combo on the Master (%d/3 Hits).", successfulMeleeHits), 40, 60, 18, RAYWHITE);
+                break;
+
+            case TUTORIAL_STANCE_SWAP:
+                DrawText("TRIAL 3: MID-COMBO STANCE SWAP", 40, 25, 24, GOLD);
+                DrawText(TextFormat("Press [SPACE] to switch between Vanguard (Melee) & Aether (Ranged) Stances (%d/2 Swaps).", successfulStanceSwaps), 40, 60, 18, RAYWHITE);
+                break;
+
+            case TUTORIAL_RANGED_ATTACK:
+                DrawText("TRIAL 4: AETHER MAGIC BOLTS", 40, 25, 24, SKYBLUE);
+                DrawText(TextFormat("In Aether Stance, press [LMB] to launch 3 Magic Bolts at the Master (%d/3 Hits).", successfulRangedHits), 40, 60, 18, RAYWHITE);
+                break;
+
+            case TUTORIAL_PARRY_TEST:
+                DrawText("TRIAL 5: DEFENSIVE PARRY TIMING", 40, 25, 24, ORANGE);
+                DrawText(TextFormat("In Vanguard Stance, press [RMB] right as the Master strikes to deflect (%d/2 Parries).", successfulParries), 40, 60, 18, RAYWHITE);
+                break;
+
+            case TUTORIAL_COMPLETE:
+                DrawText("TUTORIAL COMPLETE: COMBAT MASTERY ACHIEVED!", 40, 25, 24, GREEN);
+                DrawText("You are ready to enter the world of Vethoria. Press [ENTER] to begin your adventure.", 40, 60, 18, RAYWHITE);
+                break;
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
