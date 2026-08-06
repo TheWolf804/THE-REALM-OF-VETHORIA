@@ -1,0 +1,244 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Enum for Skill Tree Branches
+enum SkillBranch {
+    BRANCH_VANGUARD,
+    BRANCH_AETHER,
+    BRANCH_UTILITY
+};
+
+// Skill Node Structure
+struct SkillNode {
+    int id;
+    std::string name;
+    std::string description;
+    SkillBranch branch;
+    Vector2 gridPos; // Canvas UI Position
+    int cost;
+    bool unlocked;
+    int prerequisiteId; // -1 if starting node
+};
+
+// Player Experience & Leveling Data
+struct PlayerProgression {
+    int level = 1;
+    int currentXP = 0;
+    int xpToNextLevel = 100;
+    int skillPoints = 3; // Starting bonus points for testing
+    int attributePoints = 0;
+
+    // Derived Combat Stats
+    float maxHealth = 100.0f;
+    float attackPowerMultiplier = 1.0f;
+    float moveSpeedMultiplier = 1.0f;
+    float critChance = 0.05f;
+};
+
+// Global Skill Tree Registry
+std::vector<SkillNode> skillTree = {
+    // Vanguard Branch (Melee)
+    { 1, "Blade Polish", "Increases Melee Attack Damage by 15%.", BRANCH_VANGUARD, { 250, 220 }, 1, false, -1 },
+    { 2, "Executioner", "Grants +15% Critical Strike Chance on combos.", BRANCH_VANGUARD, { 250, 340 }, 2, false, 1 },
+    { 3, "Tiger Drop", "Perfect Parries reflect 200% damage back to attackers.", BRANCH_VANGUARD, { 250, 460 }, 3, false, 2 },
+
+    // Aether Branch (Ranged Magic)
+    { 4, "Arcane Flow", "Increases Max Aether Capacity and Bolt Speed.", BRANCH_AETHER, { 640, 220 }, 1, false, -1 },
+    { 5, "Starlight Nova", "Aether Bolts explode on impact dealing area damage.", BRANCH_AETHER, { 640, 340 }, 2, false, 4 },
+    { 6, "Overcharge", "Firing bolts at max Aether increases fire rate by 50%.", BRANCH_AETHER, { 640, 460 }, 3, false, 5 },
+
+    // Utility Branch (Survival & Speed)
+    { 7, "Fleet Foot", "Increases movement speed by 15%.", BRANCH_UTILITY, { 1030, 220 }, 1, false, -1 },
+    { 8, "Iron Will", "Increases Maximum Health by +50 HP.", BRANCH_UTILITY, { 1030, 340 }, 2, false, 7 },
+    { 9, "Second Wind", "Restores 30% HP automatically when entering critical state.", BRANCH_UTILITY, { 1030, 460 }, 3, false, 8 }
+};
+
+// Helper: Award Experience & Handle Level-Up Logic
+void AddExperience(PlayerProgression& prog, int amount) {
+    prog.currentXP += amount;
+    while (prog.currentXP >= prog.xpToNextLevel) {
+        prog.currentXP -= prog.xpToNextLevel;
+        prog.level++;
+        prog.skillPoints += 1;
+        prog.attributePoints += 2;
+        prog.xpToNextLevel = (int)(prog.xpToNextLevel * 1.5f); // 50% scaling per level
+    }
+}
+
+// Helper: Apply Unlocked Passive Buffs to Player Stats
+void ApplySkillEffects(const SkillNode& node, PlayerProgression& prog) {
+    switch (node.id) {
+        case 1: prog.attackPowerMultiplier += 0.15f; break;
+        case 2: prog.critChance += 0.15f; break;
+        case 7: prog.moveSpeedMultiplier += 0.15f; break;
+        case 8: prog.maxHealth += 50.0f; break;
+    }
+}
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Leveling & Skill Tree Engine");
+    SetTargetFPS(60);
+
+    PlayerProgression playerProg;
+    bool showSkillTreeUI = false;
+    int hoveredNodeId = -1;
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // =========================================================================
+        // 1. INPUT & TOGGLES
+        // =========================================================================
+        if (IsKeyPressed(KEY_K)) {
+            showSkillTreeUI = !showSkillTreeUI;
+        }
+
+        // Test XP Gain Key (Press [X] to simulate killing monsters)
+        if (IsKeyPressed(KEY_X)) {
+            AddExperience(playerProg, 45);
+        }
+
+        // =========================================================================
+        // 2. SKILL TREE INTERACTION LOGIC
+        // =========================================================================
+        hoveredNodeId = -1;
+        if (showSkillTreeUI) {
+            Vector2 mousePos = GetMousePosition();
+
+            for (auto& node : skillTree) {
+                // Check if mouse hovers over node circle (Radius: 30)
+                if (CheckCollisionPointCircle(mousePos, node.gridPos, 30.0f)) {
+                    hoveredNodeId = node.id;
+
+                    // Click to Unlock Skill Node
+                    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !node.unlocked) {
+                        bool prerequisiteMet = (node.prerequisiteId == -1);
+
+                        // Check if prerequisite skill is unlocked
+                        if (!prerequisiteMet) {
+                            for (const auto& reqNode : skillTree) {
+                                if (reqNode.id == node.prerequisiteId && reqNode.unlocked) {
+                                    prerequisiteMet = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Unlock Node if Player has SP and requirements met
+                        if (prerequisiteMet && playerProg.skillPoints >= node.cost) {
+                            playerProg.skillPoints -= node.cost;
+                            node.unlocked = true;
+                            ApplySkillEffects(node, playerProg);
+                        }
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // 3. RENDERING PASS
+        // =========================================================================
+        BeginDrawing();
+        ClearBackground(GetColor(0x121217FF));
+
+        // Background World View (Placeholder)
+        DrawText("PLAYING GAME WORLD...", 100, 200, 20, DARKGRAY);
+        DrawText("Press [X] to Grant XP | Press [K] to Toggle Skill Tree", 100, 240, 18, RAYWHITE);
+
+        // --- HUD HUD OVERLAY ---
+        DrawRectangle(20, 20, 360, 110, GetColor(0x1E1E28FF));
+        DrawRectangleLines(20, 20, 360, 110, GRAY);
+
+        DrawText(TextFormat("LEVEL %d", playerProg.level), 35, 32, 22, GOLD);
+        DrawText(TextFormat("Skill Points: %d", playerProg.skillPoints), 220, 35, 18, GREEN);
+
+        // Experience Bar
+        DrawText("XP", 35, 65, 14, SKYBLUE);
+        DrawRectangle(70, 67, 290, 12, DARKGRAY);
+        float xpRatio = (float)playerProg.currentXP / playerProg.xpToNextLevel;
+        DrawRectangle(70, 67, xpRatio * 290, 12, SKYBLUE);
+        DrawText(TextFormat("%d / %d", playerProg.currentXP, playerProg.xpToNextLevel), 180, 82, 12, LIGHTGRAY);
+
+        // =========================================================================
+        // 4. SKILL TREE UI OVERLAY PASS
+        // =========================================================================
+        if (showSkillTreeUI) {
+            // Darken background backdrop
+            DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.75f));
+
+            // Main Window Panel
+            Rectangle windowRec = { 100, 60, 1080, 600 };
+            DrawRectangleRec(windowRec, GetColor(0x181822FF));
+            DrawRectangleLinesEx(windowRec, 2, GOLD);
+
+            DrawText("VETHORIA SKILL TREE & ABILITIES", 130, 85, 26, GOLD);
+            DrawText(TextFormat("Available SP: %d", playerProg.skillPoints), 950, 90, 20, GREEN);
+            DrawLine(130, 125, 1150, 125, GRAY);
+
+            // Branch Header Titles
+            DrawText("VANGUARD (MELEE)", 175, 145, 18, GOLD);
+            DrawText("AETHER (RANGED)", 570, 145, 18, SKYBLUE);
+            DrawText("UTILITY (SURVIVAL)", 950, 145, 18, ORANGE);
+
+            // --- DRAW PREREQUISITE CONNECTOR LINES ---
+            for (const auto& node : skillTree) {
+                if (node.prerequisiteId != -1) {
+                    // Find parent node
+                    for (const auto& parentNode : skillTree) {
+                        if (parentNode.id == node.prerequisiteId) {
+                            Color lineCol = (node.unlocked) ? GOLD : DARKGRAY;
+                            DrawLineEx(parentNode.gridPos, node.gridPos, 4.0f, lineCol);
+                        }
+                    }
+                }
+            }
+
+            // --- DRAW SKILL NODES ---
+            for (const auto& node : skillTree) {
+                Color nodeBgColor = GetColor(0x282836FF);
+                Color nodeBorderColor = GRAY;
+
+                if (node.unlocked) {
+                    nodeBgColor = (node.branch == BRANCH_VANGUARD) ? MAROON : (node.branch == BRANCH_AETHER ? DARKBLUE : DARKGREEN);
+                    nodeBorderColor = GOLD;
+                } else if (hoveredNodeId == node.id) {
+                    nodeBorderColor = RAYWHITE;
+                }
+
+                // Draw Node Outer & Inner Circle
+                DrawCircleV(node.gridPos, 30.0f, nodeBgColor);
+                DrawCircleLines(node.gridPos.x, node.gridPos.y, 30.0f, nodeBorderColor);
+
+                // Draw Cost Badge
+                DrawText(TextFormat("%d SP", node.cost), node.gridPos.x - 14, node.gridPos.y - 6, 14, RAYWHITE);
+            }
+
+            // --- HOVER TOOLTIP BOX ---
+            if (hoveredNodeId != -1) {
+                for (const auto& node : skillTree) {
+                    if (node.id == hoveredNodeId) {
+                        Vector2 mousePos = GetMousePosition();
+                        Rectangle tooltipRec = { mousePos.x + 15, mousePos.y + 15, 280, 100 };
+
+                        DrawRectangleRec(tooltipRec, GetColor(0x0F0F14FF));
+                        DrawRectangleLinesEx(tooltipRec, 2, GOLD);
+
+                        DrawText(node.name.c_str(), tooltipRec.x + 10, tooltipRec.y + 10, 18, GOLD);
+                        DrawText(TextFormat("Cost: %d Skill Point(s)", node.cost), tooltipRec.x + 10, tooltipRec.y + 32, 14, GREEN);
+                        DrawText(node.description.c_str(), tooltipRec.x + 10, tooltipRec.y + 55, 12, LIGHTGRAY);
+                    }
+                }
+            }
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
