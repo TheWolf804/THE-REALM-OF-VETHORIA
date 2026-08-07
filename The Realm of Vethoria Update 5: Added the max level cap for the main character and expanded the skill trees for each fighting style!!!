@@ -1,0 +1,256 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Enum for Skill Tree Branches
+enum SkillBranch {
+    BRANCH_VANGUARD,
+    BRANCH_AETHER,
+    BRANCH_UTILITY
+};
+
+// Skill Node Structure
+struct SkillNode {
+    int id;
+    std::string name;
+    std::string description;
+    SkillBranch branch;
+    Vector2 gridPos;
+    int cost;
+    int requiredLevel;
+    bool unlocked;
+    int prerequisiteId; // -1 if root node
+};
+
+// Player Progression & Level Cap Engine
+struct PlayerProgression {
+    static const int MAX_LEVEL = 50;
+    
+    int level = 1;
+    int currentXP = 0;
+    int xpToNextLevel = 100;
+    int skillPoints = 5; // Starting allocation for testing
+    int attributePoints = 0;
+
+    // Base Combat Attributes
+    float maxHealth = 100.0f;
+    float attackPowerMultiplier = 1.0f;
+    float moveSpeedMultiplier = 1.0f;
+    float critChance = 0.05f;
+    float parryReflectMultiplier = 1.0f;
+    bool hasDragonStanceUnlocked = false;
+    bool hasOverloadBeamUnlocked = false;
+    bool hasImmortalityUnlocked = false;
+};
+
+// 18 Expanded Skill Nodes
+std::vector<SkillNode> skillTree = {
+    // === VANGUARD BRANCH (MELEE) ===
+    { 1, "Blade Polish", "Increases Melee Attack Damage by +15%.", BRANCH_VANGUARD, { 200, 200 }, 1, 1, false, -1 },
+    { 2, "Executioner", "Grants +15% Critical Strike Chance on combos.", BRANCH_VANGUARD, { 200, 290 }, 1, 5, false, 1 },
+    { 3, "Tiger Drop", "Parries reflect 200% damage back at foes.", BRANCH_VANGUARD, { 200, 380 }, 2, 15, false, 2 },
+    { 4, "Cleave Strike", "Combo finisher hits all targets in a wide arc.", BRANCH_VANGUARD, { 140, 470 }, 2, 25, false, 3 },
+    { 5, "Stance Synergy", "Swapping stances mid-combo grants +20% attack speed.", BRANCH_VANGUARD, { 260, 470 }, 2, 25, false, 3 },
+    { 6, "APEX: DRAGON STANCE", "Unlocks the ultimate brawling stance with hyper-armor.", BRANCH_VANGUARD, { 200, 560 }, 5, 50, false, 4 },
+
+    // === AETHER BRANCH (RANGED) ===
+    { 7, "Arcane Flow", "Increases Aether Bolt velocity and capacity.", BRANCH_AETHER, { 640, 200 }, 1, 1, false, -1 },
+    { 8, "Starlight Nova", "Aether Bolts explode on impact in a small area.", BRANCH_AETHER, { 640, 290 }, 1, 5, false, 7 },
+    { 9, "Overcharge", "Firing at full Aether increases fire rate by +50%.", BRANCH_AETHER, { 640, 380 }, 2, 15, false, 8 },
+    { 10, "Aether Beam", "Replaces single bolts with a continuous piercing laser.", BRANCH_AETHER, { 580, 470 }, 2, 25, false, 9 },
+    { 11, "Flux Burst", "Dashing leaves behind an exploding decoy.", BRANCH_AETHER, { 700, 470 }, 2, 25, false, 9 },
+    { 12, "APEX: OVERLOAD BEAM", "Fires a map-clearing death ray consuming all Aether.", BRANCH_AETHER, { 640, 560 }, 5, 50, false, 10 },
+
+    // === UTILITY BRANCH (SURVIVAL) ===
+    { 13, "Fleet Foot", "Increases movement speed by +15%.", BRANCH_UTILITY, { 1080, 200 }, 1, 1, false, -1 },
+    { 14, "Iron Will", "Increases Maximum Health by +50 HP.", BRANCH_UTILITY, { 1080, 290 }, 1, 5, false, 13 },
+    { 15, "Second Wind", "Restores 30% HP automatically when entering critical health.", BRANCH_UTILITY, { 1080, 380 }, 2, 15, false, 14 },
+    { 16, "Life Siphon", "Dealing melee combo damage heals you for 5% of damage done.", BRANCH_UTILITY, { 1020, 470 }, 2, 25, false, 15 },
+    { 17, "Aegis Shield", "Gain a protective barrier that absorbs 1 hit every 15s.", BRANCH_UTILITY, { 1140, 470 }, 2, 25, false, 15 },
+    { 18, "APEX: UNDYING WILL", "Upon taking lethal damage, survive with 1 HP and invulnerability.", BRANCH_UTILITY, { 1080, 560 }, 5, 50, false, 16 }
+};
+
+// Experience & Level Cap Calculation Helper
+void AddExperience(PlayerProgression& prog, int amount) {
+    if (prog.level >= PlayerProgression::MAX_LEVEL) return;
+
+    prog.currentXP += amount;
+    while (prog.currentXP >= prog.xpToNextLevel && prog.level < PlayerProgression::MAX_LEVEL) {
+        prog.currentXP -= prog.xpToNextLevel;
+        prog.level++;
+        prog.skillPoints += (prog.level % 5 == 0) ? 3 : 1; // Bonus points every 5 levels
+        prog.attributePoints += 2;
+        prog.xpToNextLevel = (int)(prog.xpToNextLevel * 1.35f);
+
+        if (prog.level == PlayerProgression::MAX_LEVEL) {
+            prog.currentXP = 0; // Cap at max
+        }
+    }
+}
+
+// Apply Passive Skill Benefits
+void ApplySkillEffects(const SkillNode& node, PlayerProgression& prog) {
+    switch (node.id) {
+        case 1: prog.attackPowerMultiplier += 0.15f; break;
+        case 2: prog.critChance += 0.15f; break;
+        case 3: prog.parryReflectMultiplier = 2.0f; break;
+        case 6: prog.hasDragonStanceUnlocked = true; break;
+        case 12: prog.hasOverloadBeamUnlocked = true; break;
+        case 13: prog.moveSpeedMultiplier += 0.15f; break;
+        case 14: prog.maxHealth += 50.0f; break;
+        case 18: prog.hasImmortalityUnlocked = true; break;
+    }
+}
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Level 50 Cap & Expanded Skill Trees");
+    SetTargetFPS(60);
+
+    PlayerProgression playerProg;
+    bool showSkillTreeUI = false;
+    int hoveredNodeId = -1;
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // Toggles
+        if (IsKeyPressed(KEY_K)) showSkillTreeUI = !showSkillTreeUI;
+        if (IsKeyPressed(KEY_X)) AddExperience(playerProg, 250); // XP testing
+        if (IsKeyPressed(KEY_L)) AddExperience(playerProg, 10000); // Level 50 boost test
+
+        // Skill Node Interactions
+        hoveredNodeId = -1;
+        if (showSkillTreeUI) {
+            Vector2 mousePos = GetMousePosition();
+
+            for (auto& node : skillTree) {
+                if (CheckCollisionPointCircle(mousePos, node.gridPos, 24.0f)) {
+                    hoveredNodeId = node.id;
+
+                    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !node.unlocked) {
+                        bool prerequisiteMet = (node.prerequisiteId == -1);
+
+                        if (!prerequisiteMet) {
+                            for (const auto& reqNode : skillTree) {
+                                if (reqNode.id == node.prerequisiteId && reqNode.unlocked) {
+                                    prerequisiteMet = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Unlock Check: Level + SP + Prerequisites
+                        if (prerequisiteMet && playerProg.level >= node.requiredLevel && playerProg.skillPoints >= node.cost) {
+                            playerProg.skillPoints -= node.cost;
+                            node.unlocked = true;
+                            ApplySkillEffects(node, playerProg);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Rendering Pass
+        BeginDrawing();
+        ClearBackground(GetColor(0x101015FF));
+
+        // Background Text
+        DrawText("PLAYING GAME WORLD...", 80, 200, 20, DARKGRAY);
+        DrawText("Press [X] Grant 250 XP | Press [L] Level Up Boost | Press [K] Toggle Skill Tree", 80, 240, 18, RAYWHITE);
+
+        // HUD Top Banner
+        DrawRectangle(20, 20, 420, 110, GetColor(0x1B1B24FF));
+        DrawRectangleLines(20, 20, 420, 110, GRAY);
+
+        if (playerProg.level >= PlayerProgression::MAX_LEVEL) {
+            DrawText("LEVEL 50 (MAX CAP)", 35, 32, 22, GOLD);
+        } else {
+            DrawText(TextFormat("LEVEL %d", playerProg.level), 35, 32, 22, GOLD);
+        }
+        
+        DrawText(TextFormat("Skill Points: %d", playerProg.skillPoints), 280, 35, 18, GREEN);
+
+        // XP Bar
+        DrawText("XP", 35, 65, 14, SKYBLUE);
+        DrawRectangle(70, 67, 340, 12, DARKGRAY);
+        float xpRatio = (playerProg.level >= PlayerProgression::MAX_LEVEL) ? 1.0f : (float)playerProg.currentXP / playerProg.xpToNextLevel;
+        DrawRectangle(70, 67, xpRatio * 340, 12, SKYBLUE);
+
+        // SKILL TREE OVERLAY
+        if (showSkillTreeUI) {
+            DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.85f));
+
+            Rectangle windowRec = { 50, 40, 1180, 640 };
+            DrawRectangleRec(windowRec, GetColor(0x161620FF));
+            DrawRectangleLinesEx(windowRec, 2, GOLD);
+
+            DrawText("VETHORIA SKILL TREES (LEVEL CAP: 50)", 80, 60, 24, GOLD);
+            DrawText(TextFormat("Available SP: %d", playerProg.skillPoints), 1020, 60, 20, GREEN);
+            DrawLine(80, 95, 1200, 95, GRAY);
+
+            // Branch Titles
+            DrawText("VANGUARD (MELEE)", 120, 110, 18, GOLD);
+            DrawText("AETHER (RANGED)", 560, 110, 18, SKYBLUE);
+            DrawText("UTILITY (SURVIVAL)", 1000, 110, 18, ORANGE);
+
+            // Draw Connection Lines
+            for (const auto& node : skillTree) {
+                if (node.prerequisiteId != -1) {
+                    for (const auto& parentNode : skillTree) {
+                        if (parentNode.id == node.prerequisiteId) {
+                            Color lineCol = (node.unlocked) ? GOLD : DARKGRAY;
+                            DrawLineEx(parentNode.gridPos, node.gridPos, 3.0f, lineCol);
+                        }
+                    }
+                }
+            }
+
+            // Draw Skill Nodes
+            for (const auto& node : skillTree) {
+                Color nodeBgColor = GetColor(0x222230FF);
+                Color nodeBorderColor = GRAY;
+
+                if (node.unlocked) {
+                    nodeBgColor = (node.branch == BRANCH_VANGUARD) ? MAROON : (node.branch == BRANCH_AETHER ? DARKBLUE : DARKGREEN);
+                    nodeBorderColor = GOLD;
+                } else if (hoveredNodeId == node.id) {
+                    nodeBorderColor = RAYWHITE;
+                } else if (playerProg.level < node.requiredLevel) {
+                    nodeBorderColor = RED; // Red outline if level requirement not met
+                }
+
+                DrawCircleV(node.gridPos, 24.0f, nodeBgColor);
+                DrawCircleLines(node.gridPos.x, node.gridPos.y, 24.0f, nodeBorderColor);
+                DrawText(TextFormat("%d", node.cost), node.gridPos.x - 4, node.gridPos.y - 6, 14, RAYWHITE);
+            }
+
+            // Tooltip Overlay
+            if (hoveredNodeId != -1) {
+                for (const auto& node : skillTree) {
+                    if (node.id == hoveredNodeId) {
+                        Vector2 mousePos = GetMousePosition();
+                        Rectangle tooltipRec = { mousePos.x + 15, mousePos.y + 15, 300, 110 };
+
+                        DrawRectangleRec(tooltipRec, GetColor(0x0C0C12FF));
+                        DrawRectangleLinesEx(tooltipRec, 2, GOLD);
+
+                        DrawText(node.name.c_str(), tooltipRec.x + 10, tooltipRec.y + 10, 18, GOLD);
+                        
+                        Color reqCol = (playerProg.level >= node.requiredLevel) ? GREEN : RED;
+                        DrawText(TextFormat("Req Level: %d | Cost: %d SP", node.requiredLevel, node.cost), tooltipRec.x + 10, tooltipRec.y + 32, 14, reqCol);
+                        DrawText(node.description.c_str(), tooltipRec.x + 10, tooltipRec.y + 58, 12, LIGHTGRAY);
+                    }
+                }
+            }
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
