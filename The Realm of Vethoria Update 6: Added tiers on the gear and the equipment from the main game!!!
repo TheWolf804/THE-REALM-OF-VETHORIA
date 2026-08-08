@@ -1,0 +1,325 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Item Rarities / Tiers
+enum ItemRarity {
+    RARITY_COMMON,     // Gray
+    RARITY_UNCOMMON,   // Green
+    RARITY_RARE,       // Blue
+    RARITY_EPIC,       // Purple
+    RARITY_LEGENDARY,  // Gold
+    RARITY_GODFORGED   // Cyan
+};
+
+// Equipment Slots
+enum EquipSlot {
+    SLOT_WEAPON,
+    SLOT_ARMOR,
+    SLOT_ACCESSORY,
+    SLOT_NONE
+};
+
+// Equipment Item Structure
+struct EquipmentItem {
+    int id;
+    std::string name;
+    EquipSlot slot;
+    ItemRarity rarity;
+    int itemLevel;
+    
+    // Stat Bonuses
+    float attackBonus;
+    float defenseBonus;
+    float healthBonus;
+    float critChanceBonus;
+    
+    std::string description;
+};
+
+// Player Equipment Paperdoll & Stats
+struct PlayerEquipment {
+    EquipmentItem weapon;
+    EquipmentItem armor;
+    EquipmentItem accessory;
+
+    bool hasWeaponEquipped = false;
+    bool hasArmorEquipped = false;
+    bool hasAccessoryEquipped = false;
+};
+
+// Helper: Get Rarity Color
+Color GetRarityColor(ItemRarity rarity) {
+    switch (rarity) {
+        case RARITY_COMMON:    return GRAY;
+        case RARITY_UNCOMMON:  return GREEN;
+        case RARITY_RARE:      return SKYBLUE;
+        case RARITY_EPIC:      return PURPLE;
+        case RARITY_LEGENDARY: return GOLD;
+        case RARITY_GODFORGED: return CYAN;
+        default:               return RAYWHITE;
+    }
+}
+
+// Helper: Get Rarity Name
+std::string GetRarityName(ItemRarity rarity) {
+    switch (rarity) {
+        case RARITY_COMMON:    return "Common";
+        case RARITY_UNCOMMON:  return "Uncommon";
+        case RARITY_RARE:      return "Rare";
+        case RARITY_EPIC:      return "Epic";
+        case RARITY_LEGENDARY: return "Legendary";
+        case RARITY_GODFORGED: return "God-Forged";
+        default:               return "Unknown";
+    }
+}
+
+// Procedural Item Generator
+EquipmentItem GenerateRandomLoot(int itemLevel, ItemRarity forcedRarity) {
+    static int itemCounter = 1;
+    EquipmentItem item;
+    item.id = itemCounter++;
+    item.itemLevel = itemLevel;
+    item.rarity = forcedRarity;
+    
+    // Randomize Slot
+    int slotRoll = GetRandomValue(0, 2);
+    item.slot = (EquipSlot)slotRoll;
+
+    // Stat Tier Multiplier
+    float statMult = 1.0f;
+    switch (forcedRarity) {
+        case RARITY_COMMON:    statMult = 1.0f; break;
+        case RARITY_UNCOMMON:  statMult = 1.25f; break;
+        case RARITY_RARE:      statMult = 1.60f; break;
+        case RARITY_EPIC:      statMult = 2.10f; break;
+        case RARITY_LEGENDARY: statMult = 2.80f; break;
+        case RARITY_GODFORGED: statMult = 4.00f; break;
+    }
+
+    if (item.slot == SLOT_WEAPON) {
+        std::vector<std::string> names = { "Iron Longsword", "Aether Katana", "Dragon Greatsword", "Void Blade" };
+        item.name = names[GetRandomValue(0, names.size() - 1)];
+        item.attackBonus = (10.0f + (itemLevel * 3.0f)) * statMult;
+        item.defenseBonus = 0;
+        item.healthBonus = 0;
+        item.critChanceBonus = 0.05f * statMult;
+        item.description = "A sharp weapon forged for heavy combat encounters.";
+    } else if (item.slot == SLOT_ARMOR) {
+        std::vector<std::string> names = { "Leather Cuirass", "Titanium Plate", "Aether Aegis", "Dragon Scale Armor" };
+        item.name = names[GetRandomValue(0, names.size() - 1)];
+        item.attackBonus = 0;
+        item.defenseBonus = (8.0f + (itemLevel * 2.5f)) * statMult;
+        item.healthBonus = (25.0f + (itemLevel * 10.0f)) * statMult;
+        item.critChanceBonus = 0;
+        item.description = "Heavy protective gear forged to absorb direct damage.";
+    } else {
+        std::vector<std::string> names = { "Ruby Ring", "Amon's Dark Sunglasses", "Aether Crystal", "Emblem of Valhalla" };
+        item.name = names[GetRandomValue(0, names.size() - 1)];
+        item.attackBonus = (5.0f + itemLevel) * statMult;
+        item.defenseBonus = (3.0f + itemLevel) * statMult;
+        item.healthBonus = (15.0f + (itemLevel * 5.0f)) * statMult;
+        item.critChanceBonus = 0.08f * statMult;
+        item.description = "A rare magical accessory imbuing balanced stat boosts.";
+    }
+
+    return item;
+}
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Tiered Equipment & Loot System");
+    SetTargetFPS(60);
+
+    PlayerEquipment equippedItems;
+    std::vector<EquipmentItem> inventory;
+
+    // Pre-populate inventory with starting items
+    inventory.push_back(GenerateRandomLoot(1, RARITY_COMMON));
+    inventory.push_back(GenerateRandomLoot(5, RARITY_RARE));
+    inventory.push_back(GenerateRandomLoot(15, RARITY_EPIC));
+    inventory.push_back(GenerateRandomLoot(50, RARITY_GODFORGED));
+
+    bool showInventoryUI = false;
+    int hoveredInventoryIndex = -1;
+
+    while (!WindowShouldClose()) {
+        // Inputs
+        if (IsKeyPressed(KEY_I)) showInventoryUI = !showInventoryUI;
+
+        // Generate Random Loot Drop Key (Press [G])
+        if (IsKeyPressed(KEY_G)) {
+            if (inventory.size() < 16) {
+                ItemRarity randomRarity = (ItemRarity)GetRandomValue(0, 5);
+                inventory.push_back(GenerateRandomLoot(GetRandomValue(1, 50), randomRarity));
+            }
+        }
+
+        // Inventory & Equipment Interaction
+        hoveredInventoryIndex = -1;
+        if (showInventoryUI) {
+            Vector2 mousePos = GetMousePosition();
+
+            // Check Inventory Grid Clicks
+            for (size_t i = 0; i < inventory.size(); i++) {
+                int row = i / 4;
+                int col = i % 4;
+                Rectangle slotRec = { 650.0f + (col * 110.0f), 180.0f + (row * 110.0f), 100.0f, 100.0f };
+
+                if (CheckCollisionPointRec(mousePos, slotRec)) {
+                    hoveredInventoryIndex = i;
+
+                    // Click to Equip Item
+                    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                        EquipmentItem itemToEquip = inventory[i];
+
+                        if (itemToEquip.slot == SLOT_WEAPON) {
+                            if (equippedItems.hasWeaponEquipped) inventory.push_back(equippedItems.weapon);
+                            equippedItems.weapon = itemToEquip;
+                            equippedItems.hasWeaponEquipped = true;
+                        } else if (itemToEquip.slot == SLOT_ARMOR) {
+                            if (equippedItems.hasArmorEquipped) inventory.push_back(equippedItems.armor);
+                            equippedItems.armor = itemToEquip;
+                            equippedItems.hasArmorEquipped = true;
+                        } else if (itemToEquip.slot == SLOT_ACCESSORY) {
+                            if (equippedItems.hasAccessoryEquipped) inventory.push_back(equippedItems.accessory);
+                            equippedItems.accessory = itemToEquip;
+                            equippedItems.hasAccessoryEquipped = true;
+                        }
+
+                        // Remove from inventory
+                        inventory.erase(inventory.begin() + i);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Calculate Totals from Equipped Gear
+        float totalAttack = 0, totalDefense = 0, totalHealth = 0, totalCrit = 0;
+        if (equippedItems.hasWeaponEquipped) {
+            totalAttack += equippedItems.weapon.attackBonus;
+            totalCrit += equippedItems.weapon.critChanceBonus;
+        }
+        if (equippedItems.hasArmorEquipped) {
+            totalDefense += equippedItems.armor.defenseBonus;
+            totalHealth += equippedItems.armor.healthBonus;
+        }
+        if (equippedItems.hasAccessoryEquipped) {
+            totalAttack += equippedItems.accessory.attackBonus;
+            totalDefense += equippedItems.accessory.defenseBonus;
+            totalHealth += equippedItems.accessory.healthBonus;
+            totalCrit += equippedItems.accessory.critChanceBonus;
+        }
+
+        // Render Pass
+        BeginDrawing();
+        ClearBackground(GetColor(0x111116FF));
+
+        // Background Text
+        DrawText("WORLD CANVAS VIEW...", 80, 200, 20, DARKGRAY);
+        DrawText("Press [G] Drop Random Tiered Loot | Press [I] Toggle Equipment Window", 80, 240, 18, RAYWHITE);
+
+        // Player Gear HUD Summary
+        DrawRectangle(20, 20, 360, 130, GetColor(0x1A1A24FF));
+        DrawRectangleLines(20, 20, 360, 130, GRAY);
+
+        DrawText("EQUIPPED STAT BONUSES", 35, 32, 18, GOLD);
+        DrawText(TextFormat("Bonus Attack: +%.1f", totalAttack), 35, 60, 16, RED);
+        DrawText(TextFormat("Bonus Defense: +%.1f", totalDefense), 35, 80, 16, BLUE);
+        DrawText(TextFormat("Bonus Health: +%.1f", totalHealth), 200, 60, 16, GREEN);
+        DrawText(TextFormat("Bonus Crit: +%.1f%%", totalCrit * 100.0f), 200, 80, 16, YELLOW);
+
+        // INVENTORY & EQUIPMENT UI WINDOW
+        if (showInventoryUI) {
+            DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.85f));
+
+            Rectangle windowRec = { 100, 50, 1080, 620 };
+            DrawRectangleRec(windowRec, GetColor(0x161620FF));
+            DrawRectangleLinesEx(windowRec, 2, GOLD);
+
+            DrawText("CHARACTER EQUIPMENT & INVENTORY", 130, 75, 24, GOLD);
+            DrawText(TextFormat("Backpack Items: %d / 16", (int)inventory.size()), 920, 75, 18, LIGHTGRAY);
+            DrawLine(130, 110, 1150, 110, GRAY);
+
+            // --- LEFT SIDE: PAPERDOLL EQUIPMENT SLOTS ---
+            DrawText("EQUIPPED GEAR", 150, 135, 20, GOLD);
+
+            auto DrawEquipSlotUI = [&](float x, float y, const char* label, bool hasItem, const EquipmentItem& item) {
+                Rectangle slotRec = { x, y, 320, 80 };
+                DrawRectangleRec(slotRec, GetColor(0x222230FF));
+                
+                Color borderColor = hasItem ? GetRarityColor(item.rarity) : GRAY;
+                DrawRectangleLinesEx(slotRec, 2, borderColor);
+
+                DrawText(label, x + 10, y + 10, 14, GRAY);
+
+                if (hasItem) {
+                    DrawText(item.name.c_str(), x + 10, y + 30, 18, GetRarityColor(item.rarity));
+                    DrawText(TextFormat("Lvl %d %s", item.itemLevel, GetRarityName(item.rarity).c_str()), x + 10, y + 54, 12, LIGHTGRAY);
+                } else {
+                    DrawText("Empty Slot", x + 10, y + 35, 18, DARKGRAY);
+                }
+            };
+
+            DrawEquipSlotUI(150, 170, "WEAPON SLOT", equippedItems.hasWeaponEquipped, equippedItems.weapon);
+            DrawEquipSlotUI(150, 270, "ARMOR SLOT", equippedItems.hasArmorEquipped, equippedItems.armor);
+            DrawEquipSlotUI(150, 370, "ACCESSORY SLOT", equippedItems.hasAccessoryEquipped, equippedItems.accessory);
+
+            // --- RIGHT SIDE: INVENTORY GRID (4x4) ---
+            DrawText("BACKPACK INVENTORY", 650, 135, 20, SKYBLUE);
+
+            for (int i = 0; i < 16; i++) {
+                int row = i / 4;
+                int col = i % 4;
+                Rectangle slotRec = { 650.0f + (col * 110.0f), 180.0f + (row * 110.0f), 100.0f, 100.0f };
+
+                DrawRectangleRec(slotRec, GetColor(0x222230FF));
+
+                if (i < (int)inventory.size()) {
+                    const auto& item = inventory[i];
+                    Color rarityCol = GetRarityColor(item.rarity);
+
+                    DrawRectangleLinesEx(slotRec, 2, rarityCol);
+                    DrawText(TextFormat("Lvl %d", item.itemLevel), slotRec.x + 8, slotRec.y + 8, 12, LIGHTGRAY);
+                    
+                    // Truncated Item Name
+                    std::string shortName = item.name.substr(0, 8) + "..";
+                    DrawText(shortName.c_str(), slotRec.x + 8, slotRec.y + 40, 14, rarityCol);
+                    DrawText(GetRarityName(item.rarity).c_str(), slotRec.x + 8, slotRec.y + 75, 10, rarityCol);
+                } else {
+                    DrawRectangleLinesEx(slotRec, 1, DARKGRAY);
+                }
+            }
+
+            // TOOLTIP OVERLAY
+            if (hoveredInventoryIndex != -1 && hoveredInventoryIndex < (int)inventory.size()) {
+                const auto& item = inventory[hoveredInventoryIndex];
+                Vector2 mousePos = GetMousePosition();
+                Rectangle tooltipRec = { mousePos.x + 15, mousePos.y + 15, 300, 140 };
+
+                DrawRectangleRec(tooltipRec, GetColor(0x0C0C12FF));
+                DrawRectangleLinesEx(tooltipRec, 2, GetRarityColor(item.rarity));
+
+                DrawText(item.name.c_str(), tooltipRec.x + 10, tooltipRec.y + 10, 18, GetRarityColor(item.rarity));
+                DrawText(TextFormat("Tier: %s (Lvl %d)", GetRarityName(item.rarity).c_str(), item.itemLevel), tooltipRec.x + 10, tooltipRec.y + 32, 14, RAYWHITE);
+                
+                if (item.attackBonus > 0) DrawText(TextFormat("Attack: +%.1f", item.attackBonus), tooltipRec.x + 10, tooltipRec.y + 55, 14, RED);
+                if (item.defenseBonus > 0) DrawText(TextFormat("Defense: +%.1f", item.defenseBonus), tooltipRec.x + 10, tooltipRec.y + 72, 14, BLUE);
+                if (item.healthBonus > 0) DrawText(TextFormat("Max HP: +%.1f", item.healthBonus), tooltipRec.x + 150, tooltipRec.y + 55, 14, GREEN);
+                if (item.critChanceBonus > 0) DrawText(TextFormat("Crit: +%.1f%%", item.critChanceBonus * 100.0f), tooltipRec.x + 150, tooltipRec.y + 72, 14, YELLOW);
+
+                DrawText(item.description.c_str(), tooltipRec.x + 10, tooltipRec.y + 100, 11, LIGHTGRAY);
+                DrawText("Click to Equip Item", tooltipRec.x + 10, tooltipRec.y + 118, 12, GOLD);
+            }
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
