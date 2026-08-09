@@ -1,0 +1,355 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// World Dimensions
+const int MAP_WIDTH = 30;
+const int MAP_HEIGHT = 30;
+const int TILE_SIZE = 64;
+
+// Tile Types
+enum TileType {
+    TILE_GRASS,
+    TILE_DIRT_PATH,
+    TILE_STONE_WALL,  // Solid Collision
+    TILE_WATER,       // Solid Collision
+    TILE_DUNGEON_FLOOR
+};
+
+// Interactive World Entities
+enum EntityType {
+    ENTITY_CHEST,
+    ENTITY_PORTAL_DUNGEON,
+    ENTITY_PORTAL_OVERWORLD
+};
+
+struct WorldEntity {
+    int id;
+    EntityType type;
+    Vector2 worldPos;
+    bool active;
+    bool opened; // For chests
+};
+
+// Player Entity in World Space
+struct WorldPlayer {
+    Vector2 position = { 5 * TILE_SIZE, 5 * TILE_SIZE };
+    Vector2 velocity = { 0.0f, 0.0f };
+    float speed = 300.0f;
+    float radius = 20.0f;
+};
+
+// World Zone Container
+struct WorldZone {
+    std::string name;
+    int mapData[MAP_HEIGHT][MAP_WIDTH];
+    std::vector<WorldEntity> entities;
+};
+
+// Camera Shake Data
+struct ScreenShake {
+    float intensity = 0.0f;
+    float duration = 0.0f;
+};
+
+// --- GLOBAL MAP DATA BUILDERS ---
+WorldZone CreateOverworldZone() {
+    WorldZone zone;
+    zone.name = "High Spire Overworld";
+
+    // Initialize Map with Grass and Border Walls
+    for (int y = 0; y < MAP_HEIGHT; y++) {
+        for (int x = 0; x < MAP_WIDTH; x++) {
+            if (x == 0 || y == 0 || x == MAP_WIDTH - 1 || y == MAP_HEIGHT - 1) {
+                zone.mapData[y][x] = TILE_STONE_WALL;
+            } else {
+                zone.mapData[y][x] = TILE_GRASS;
+            }
+        }
+    }
+
+    // Dirt Path
+    for (int x = 1; x < 20; x++) zone.mapData[5][x] = TILE_DIRT_PATH;
+    for (int y = 5; y < 20; y++) zone.mapData[y][20] = TILE_DIRT_PATH;
+
+    // Water Pond Barrier
+    for (int y = 10; y < 15; y++) {
+        for (int x = 8; x < 14; x++) {
+            zone.mapData[y][x] = TILE_WATER;
+        }
+    }
+
+    // Add Interactive Entities
+    zone.entities.push_back({ 1, ENTITY_CHEST, { 7 * TILE_SIZE, 5 * TILE_SIZE }, true, false });
+    zone.entities.push_back({ 2, ENTITY_CHEST, { 18 * TILE_SIZE, 12 * TILE_SIZE }, true, false });
+    zone.entities.push_back({ 3, ENTITY_PORTAL_DUNGEON, { 20 * TILE_SIZE, 20 * TILE_SIZE }, true, false });
+
+    return zone;
+}
+
+WorldZone CreateDungeonZone() {
+    WorldZone zone;
+    zone.name = "Shattered Aether Dungeon";
+
+    for (int y = 0; y < MAP_HEIGHT; y++) {
+        for (int x = 0; x < MAP_WIDTH; x++) {
+            if (x == 0 || y == 0 || x == MAP_WIDTH - 1 || y == MAP_HEIGHT - 1) {
+                zone.mapData[y][x] = TILE_STONE_WALL;
+            } else {
+                zone.mapData[y][x] = TILE_DUNGEON_FLOOR;
+            }
+        }
+    }
+
+    // Dungeon Internal Wall Pillars
+    for (int x = 5; x < 25; x += 4) {
+        for (int y = 5; y < 25; y += 4) {
+            zone.mapData[y][x] = TILE_STONE_WALL;
+        }
+    }
+
+    zone.entities.push_back({ 4, ENTITY_PORTAL_OVERWORLD, { 3 * TILE_SIZE, 3 * TILE_SIZE }, true, false });
+    zone.entities.push_back({ 5, ENTITY_CHEST, { 25 * TILE_SIZE, 25 * TILE_SIZE }, true, false });
+
+    return zone;
+}
+
+// Tile Collision Resolution
+bool CheckTileCollision(Vector2 nextPos, float radius, const WorldZone& zone) {
+    int tileXMin = (int)((nextPos.x - radius) / TILE_SIZE);
+    int tileXMax = (int)((nextPos.x + radius) / TILE_SIZE);
+    int tileYMin = (int)((nextPos.y - radius) / TILE_SIZE);
+    int tileYMax = (int)((nextPos.y + radius) / TILE_SIZE);
+
+    for (int y = tileYMin; y <= tileYMax; y++) {
+        for (int x = tileXMin; x <= tileXMax; x++) {
+            if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
+                int tileType = zone.mapData[y][x];
+                if (tileType == TILE_STONE_WALL || tileType == TILE_WATER) {
+                    Rectangle tileRec = { (float)x * TILE_SIZE, (float)y * TILE_SIZE, (float)TILE_SIZE, (float)TILE_SIZE };
+                    if (CheckCollisionCircleRec(nextPos, radius, tileRec)) {
+                        return true; // Collision detected
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: World Engine & Camera2D Navigation");
+    SetTargetFPS(60);
+
+    WorldPlayer player;
+    WorldZone overworld = CreateOverworldZone();
+    WorldZone dungeon = CreateDungeonZone();
+    WorldZone* currentZone = &overworld;
+
+    // Raylib Camera2D Setup
+    Camera2D camera = { 0 };
+    camera.target = player.position;
+    camera.offset = { screenWidth / 2.0f, screenHeight / 2.0f };
+    camera.rotation = 0.0f;
+    camera.zoom = 1.0f;
+
+    ScreenShake shake;
+    std::string notificationMsg = "Welcome to Vethoria! Explore the world.";
+    float notificationTimer = 3.0f;
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // =========================================================================
+        // 1. INPUT & MOVEMENT ENGINE
+        // =========================================================================
+
+        // Zoom Controls (Mouse Wheel)
+        camera.zoom += (GetMouseWheelMove() * 0.05f);
+        if (camera.zoom < 0.6f) camera.zoom = 0.6f;
+        if (camera.zoom > 1.5f) camera.zoom = 1.5f;
+
+        // Player Movement Logic
+        Vector2 inputDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+        if (Vector2Length(inputDir) > 0) {
+            inputDir = Vector2Normalize(inputDir);
+            
+            // X-Axis Axis Movement & Collision
+            Vector2 nextPosX = { player.position.x + inputDir.x * player.speed * deltaTime, player.position.y };
+            if (!CheckTileCollision(nextPosX, player.radius, *currentZone)) {
+                player.position.x = nextPosX.x;
+            }
+
+            // Y-Axis Movement & Collision
+            Vector2 nextPosY = { player.position.x, player.position.y + inputDir.y * player.speed * deltaTime };
+            if (!CheckTileCollision(nextPosY, player.radius, *currentZone)) {
+                player.position.y = nextPosY.y;
+            }
+        }
+
+        // =========================================================================
+        // 2. INTERACTABLES & ZONE TRANSITIONS
+        // =========================================================================
+        if (IsKeyPressed(KEY_E)) {
+            for (auto& entity : currentZone->entities) {
+                if (!entity.active) continue;
+
+                if (CheckCollisionCircles(player.position, 40.0f, entity.worldPos, 30.0f)) {
+                    if (entity.type == ENTITY_CHEST && !entity.opened) {
+                        entity.opened = true;
+                        notificationMsg = "CHEST OPENED: Found Rare Tiered Equipment!";
+                        notificationTimer = 3.0f;
+
+                        // Trigger Camera Shake impact effect
+                        shake.intensity = 8.0f;
+                        shake.duration = 0.3f;
+                    } 
+                    else if (entity.type == ENTITY_PORTAL_DUNGEON) {
+                        currentZone = &dungeon;
+                        player.position = { 3 * TILE_SIZE, 3 * TILE_SIZE };
+                        notificationMsg = "ENTERED: Shattered Aether Dungeon";
+                        notificationTimer = 3.0f;
+                        break;
+                    } 
+                    else if (entity.type == ENTITY_PORTAL_OVERWORLD) {
+                        currentZone = &overworld;
+                        player.position = { 20 * TILE_SIZE, 20 * TILE_SIZE };
+                        notificationMsg = "ENTERED: High Spire Overworld";
+                        notificationTimer = 3.0f;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // 3. CAMERA LERP & SHAKE UPDATE
+        // =========================================================================
+        // Smooth camera movement interpolation (Lerp)
+        camera.target.x += (player.position.x - camera.target.x) * 0.1f;
+        camera.target.y += (player.position.y - camera.target.y) * 0.1f;
+
+        // Apply Screen Shake
+        if (shake.duration > 0) {
+            shake.duration -= deltaTime;
+            camera.offset.x = (screenWidth / 2.0f) + GetRandomValue(-shake.intensity, shake.intensity);
+            camera.offset.y = (screenHeight / 2.0f) + GetRandomValue(-shake.intensity, shake.intensity);
+        } else {
+            camera.offset = { screenWidth / 2.0f, screenHeight / 2.0f };
+        }
+
+        if (notificationTimer > 0) notificationTimer -= deltaTime;
+
+        // =========================================================================
+        // 4. RENDERING PASS
+        // =========================================================================
+        BeginDrawing();
+        ClearBackground(GetColor(0x0E0E12FF));
+
+        // --- WORLD SPACE RENDER (CAMERA ACTIVE) ---
+        BeginMode2D(camera);
+
+            // Draw Tilemap Grid
+            for (int y = 0; y < MAP_HEIGHT; y++) {
+                for (int x = 0; x < MAP_WIDTH; x++) {
+                    Rectangle tileRec = { (float)x * TILE_SIZE, (float)y * TILE_SIZE, (float)TILE_SIZE, (float)TILE_SIZE };
+                    int tileType = currentZone->mapData[y][x];
+
+                    Color tileColor = DARKGRAY;
+                    if (tileType == TILE_GRASS) tileColor = GetColor(0x2A4B28FF);
+                    else if (tileType == TILE_DIRT_PATH) tileColor = GetColor(0x5A4732FF);
+                    else if (tileType == TILE_STONE_WALL) tileColor = GetColor(0x3C3C48FF);
+                    else if (tileType == TILE_WATER) tileColor = GetColor(0x1B4965FF);
+                    else if (tileType == TILE_DUNGEON_FLOOR) tileColor = GetColor(0x22222CFF);
+
+                    DrawRectangleRec(tileRec, tileColor);
+                    DrawRectangleLinesEx(tileRec, 1, Fade(BLACK, 0.3f));
+                }
+            }
+
+            // Draw Interactive Entities
+            for (const auto& entity : currentZone->entities) {
+                if (!entity.active) continue;
+
+                if (entity.type == ENTITY_CHEST) {
+                    Color chestCol = entity.opened ? DARKGRAY : GOLD;
+                    DrawRectangle(entity.worldPos.x - 20, entity.worldPos.y - 15, 40, 30, chestCol);
+                    DrawRectangleLines(entity.worldPos.x - 20, entity.worldPos.y - 15, 40, 30, RAYWHITE);
+                    if (!entity.opened) DrawText("CHEST", entity.worldPos.x - 18, entity.worldPos.y - 5, 10, BLACK);
+                } 
+                else if (entity.type == ENTITY_PORTAL_DUNGEON || entity.type == ENTITY_PORTAL_OVERWORLD) {
+                    DrawCircleV(entity.worldPos, 28.0f, PURPLE);
+                    DrawCircleLines(entity.worldPos.x, entity.worldPos.y, 28.0f, SKYBLUE);
+                    DrawText("PORTAL", entity.worldPos.x - 22, entity.worldPos.y - 5, 10, RAYWHITE);
+                }
+
+                // Prompt when standing near entity
+                if (CheckCollisionCircles(player.position, 40.0f, entity.worldPos, 30.0f)) {
+                    DrawText("[E] INTERACT", entity.worldPos.x - 35, entity.worldPos.y - 45, 12, YELLOW);
+                }
+            }
+
+            // Draw Player Character
+            DrawCircleV(player.position, player.radius, GOLD);
+            DrawCircleLines(player.position.x, player.position.y, player.radius, RAYWHITE);
+
+        EndMode2D();
+
+        // --- SCREEN SPACE HUD OVERLAY ---
+        DrawRectangle(20, 20, 320, 65, GetColor(0x181822FF));
+        DrawRectangleLines(20, 20, 320, 65, GOLD);
+        DrawText(currentZone->name.c_str(), 35, 32, 18, GOLD);
+        DrawText("Controls: [WASD] Move | [E] Interact | [Scroll] Zoom", 35, 56, 12, LIGHTGRAY);
+
+        // Notification Banner
+        if (notificationTimer > 0) {
+            DrawRectangle(screenWidth / 2 - 250, 20, 500, 40, GetColor(0x1E1E28FF));
+            DrawRectangleLines(screenWidth / 2 - 250, 20, 500, 40, GOLD);
+            DrawText(notificationMsg.c_str(), screenWidth / 2 - MeasureText(notificationMsg.c_str(), 16) / 2, 32, 16, GREEN);
+        }
+
+        // --- REAL-TIME MINI-MAP RADAR OVERLAY (TOP RIGHT) ---
+        int miniMapSize = 150;
+        int miniMapX = screenWidth - miniMapSize - 20;
+        int miniMapY = 20;
+
+        DrawRectangle(miniMapX, miniMapY, miniMapSize, miniMapSize, GetColor(0x0C0C10FF));
+        DrawRectangleLines(miniMapX, miniMapY, miniMapSize, miniMapSize, GOLD);
+
+        float mapScaleX = (float)miniMapSize / (MAP_WIDTH * TILE_SIZE);
+        float mapScaleY = (float)miniMapSize / (MAP_HEIGHT * TILE_SIZE);
+
+        // Draw Player Blip on Mini-map
+        Vector2 miniPlayerPos = {
+            miniMapX + (player.position.x * mapScaleX),
+            miniMapY + (player.position.y * mapScaleY)
+        };
+        DrawCircleV(miniPlayerPos, 3.0f, RED);
+
+        // Draw Entities on Mini-map
+        for (const auto& entity : currentZone->entities) {
+            Vector2 miniEntPos = {
+                miniMapX + (entity.worldPos.x * mapScaleX),
+                miniMapY + (entity.worldPos.y * mapScaleY)
+            };
+            Color iconCol = (entity.type == ENTITY_CHEST) ? GOLD : PURPLE;
+            DrawCircleV(miniEntPos, 2.0f, iconCol);
+        }
+
+        DrawText("MINI-MAP", miniMapX + 5, miniMapY + miniMapSize + 5, 10, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
