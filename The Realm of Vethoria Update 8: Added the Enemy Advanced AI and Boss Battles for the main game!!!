@@ -1,0 +1,398 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Enemy Types
+enum EnemyType {
+    ENEMY_SCAVENGER,
+    ENEMY_GOLEM,
+    ENEMY_SHATTERED_TITAN // Multi-Phase Boss
+};
+
+// AI Behavior States
+enum AIState {
+    AI_PATROL,
+    AI_CHASE,
+    AI_TELEGRAPH, // Warning phase before striking
+    AI_ATTACK,
+    AI_STAGGER,   // Vulnerable state after being parried/guard-broken
+    AI_RETREAT
+};
+
+// Attack Hitbox / Hurtbox
+struct CombatHitbox {
+    Rectangle rect;
+    Vector2 circleCenter;
+    float circleRadius;
+    bool isCircle;
+    float damage;
+    bool active;
+    float duration;
+};
+
+// Base Enemy Unit Class
+struct EnemyUnit {
+    int id;
+    EnemyType type;
+    std::string name;
+    Vector2 position;
+    Vector2 startPos;
+    float radius;
+    float speed;
+    
+    // Health & Armor
+    float health;
+    float maxHealth;
+    bool isShielded; // Frontal shield blocking
+    bool isEnraged;  // Boss Phase 2 flag
+
+    // AI FSM Variables
+    AIState state = AI_PATROL;
+    float aggroRange = 250.0f;
+    float attackRange = 50.0f;
+    float stateTimer = 0.0f;
+    float attackCooldown = 0.0f;
+    Vector2 patrolTarget;
+
+    // Active Attack Data
+    CombatHitbox currentHitbox = { {0,0,0,0}, {0,0}, 0, false, 0, false, 0 };
+    CombatHitbox warningTelegraph = { {0,0,0,0}, {0,0}, 0, false, 0, false, 0 };
+};
+
+// Player Unit Data for Arena Fight
+struct ArenaPlayer {
+    Vector2 position = { 200.0f, 360.0f };
+    float speed = 260.0f;
+    float radius = 20.0f;
+    Vector2 facingDir = { 1.0f, 0.0f };
+    
+    float health = 150.0f;
+    float maxHealth = 150.0f;
+    bool isParrying = false;
+    float parryTimer = 0.0f;
+    
+    CombatHitbox attackHitbox = { {0,0,0,0}, {0,0}, 0, false, 0, false, 0 };
+    float attackCooldown = 0.0f;
+};
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Advanced AI & Boss Battle Engine");
+    SetTargetFPS(60);
+
+    ArenaPlayer player;
+    std::vector<EnemyUnit> enemies;
+
+    // --- 1. SPAWN SCAVENGER MOB ---
+    EnemyUnit scavenger;
+    scavenger.id = 1;
+    scavenger.type = ENEMY_SCAVENGER;
+    scavenger.name = "Starlight Scavenger";
+    scavenger.position = { 600.0f, 200.0f };
+    scavenger.startPos = scavenger.position;
+    scavenger.patrolTarget = { 600.0f, 300.0f };
+    scavenger.radius = 18.0f;
+    scavenger.speed = 180.0f;
+    scavenger.health = scavenger.maxHealth = 80.0f;
+    scavenger.isShielded = false;
+    scavenger.attackRange = 45.0f;
+    enemies.push_back(scavenger);
+
+    // --- 2. SPAWN CORRUPTED GOLEM (TANK) ---
+    EnemyUnit golem;
+    golem.id = 2;
+    golem.type = ENEMY_GOLEM;
+    golem.name = "Corrupted Golem";
+    golem.position = { 600.0f, 500.0f };
+    golem.startPos = golem.position;
+    golem.patrolTarget = { 700.0f, 500.0f };
+    golem.radius = 28.0f;
+    golem.speed = 110.0f;
+    golem.health = golem.maxHealth = 200.0f;
+    golem.isShielded = true; // Frontal shield active
+    golem.attackRange = 60.0f;
+    enemies.push_back(golem);
+
+    // --- 3. SPAWN MULTI-PHASE BOSS ---
+    EnemyUnit boss;
+    boss.id = 3;
+    boss.type = ENEMY_SHATTERED_TITAN;
+    boss.name = "THE SHATTERED TITAN";
+    boss.position = { 1000.0f, 360.0f };
+    boss.startPos = boss.position;
+    boss.radius = 45.0f;
+    boss.speed = 90.0f;
+    boss.health = boss.maxHealth = 600.0f;
+    boss.isShielded = false;
+    boss.isEnraged = false;
+    boss.aggroRange = 450.0f;
+    boss.attackRange = 90.0f;
+    enemies.push_back(boss);
+
+    std::string combatLog = "Arena Active: Face the Scavenger, Shielded Golem, and Boss!";
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // =========================================================================
+        // 1. PLAYER CONTROLS & ATTACKS
+        // =========================================================================
+        Vector2 inputDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+        if (Vector2Length(inputDir) > 0) {
+            inputDir = Vector2Normalize(inputDir);
+            player.facingDir = inputDir;
+            player.position = Vector2Add(player.position, Vector2Scale(inputDir, player.speed * deltaTime));
+        }
+
+        // Clamp Player in Arena
+        player.position.x = Clamp(player.position.x, 30.0f, screenWidth - 30.0f);
+        player.position.y = Clamp(player.position.y, 30.0f, screenHeight - 30.0f);
+
+        // Player Melee Strike [LMB]
+        if (player.attackCooldown > 0) player.attackCooldown -= deltaTime;
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && player.attackCooldown <= 0) {
+            player.attackCooldown = 0.3f;
+            Vector2 attackCenter = Vector2Add(player.position, Vector2Scale(player.facingDir, 35.0f));
+            player.attackHitbox = { {0,0,0,0}, attackCenter, 35.0f, true, 25.0f, true, 0.15f };
+        }
+
+        // Player Parry Shield [RMB]
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && !player.isParrying) {
+            player.isParrying = true;
+            player.parryTimer = 0.35f;
+        }
+        if (player.isParrying) {
+            player.parryTimer -= deltaTime;
+            if (player.parryTimer <= 0) player.isParrying = false;
+        }
+
+        // Update Player Attack Hitbox
+        if (player.attackHitbox.active) {
+            player.attackHitbox.duration -= deltaTime;
+            if (player.attackHitbox.duration <= 0) player.attackHitbox.active = false;
+        }
+
+        // =========================================================================
+        // 2. ADVANCED ENEMY AI FINITE STATE MACHINES
+        // =========================================================================
+        for (auto& enemy : enemies) {
+            if (enemy.health <= 0) continue;
+
+            float distToPlayer = Vector2Distance(enemy.position, player.position);
+            if (enemy.attackCooldown > 0) enemy.attackCooldown -= deltaTime;
+
+            // --- BOSS PHASE 2 TRANSITION CHECK ---
+            if (enemy.type == ENEMY_SHATTERED_TITAN && enemy.health <= (enemy.maxHealth * 0.5f) && !enemy.isEnraged) {
+                enemy.isEnraged = true;
+                enemy.speed = 150.0f; // Boss speeds up
+                combatLog = "WARNING: THE SHATTERED TITAN IS ENRAGED!";
+            }
+
+            // --- STATE MACHINE UPDATE ---
+            switch (enemy.state) {
+
+                // 1. PATROL STATE
+                case AI_PATROL: {
+                    if (distToPlayer <= enemy.aggroRange) {
+                        enemy.state = AI_CHASE;
+                    } else {
+                        // Move toward patrol point
+                        Vector2 dir = Vector2Normalize(Vector2Subtract(enemy.patrolTarget, enemy.position));
+                        enemy.position = Vector2Add(enemy.position, Vector2Scale(dir, (enemy.speed * 0.5f) * deltaTime));
+                        if (Vector2Distance(enemy.position, enemy.patrolTarget) < 10.0f) {
+                            // Swap patrol targets
+                            Vector2 temp = enemy.startPos;
+                            enemy.startPos = enemy.patrolTarget;
+                            enemy.patrolTarget = temp;
+                        }
+                    }
+                } break;
+
+                // 2. CHASE STATE
+                case AI_CHASE: {
+                    if (distToPlayer > enemy.aggroRange * 1.3f) {
+                        enemy.state = AI_PATROL; // Player escaped
+                    } else if (distToPlayer <= enemy.attackRange && enemy.attackCooldown <= 0) {
+                        enemy.state = AI_TELEGRAPH;
+                        enemy.stateTimer = enemy.isEnraged ? 0.3f : 0.7f; // Telegraph duration
+                        
+                        // Setup Telegraph Warning Circle
+                        Vector2 attackPos = Vector2Add(enemy.position, Vector2Scale(Vector2Normalize(Vector2Subtract(player.position, enemy.position)), enemy.attackRange));
+                        float warnRadius = (enemy.type == ENEMY_SHATTERED_TITAN) ? (enemy.isEnraged ? 90.0f : 65.0f) : 35.0f;
+                        enemy.warningTelegraph = { {0,0,0,0}, attackPos, warnRadius, true, 0, true, enemy.stateTimer };
+                    } else {
+                        // Move toward player
+                        Vector2 chaseDir = Vector2Normalize(Vector2Subtract(player.position, enemy.position));
+                        enemy.position = Vector2Add(enemy.position, Vector2Scale(chaseDir, enemy.speed * deltaTime));
+                    }
+                } break;
+
+                // 3. TELEGRAPH STATE (WARNING INDICATOR)
+                case AI_TELEGRAPH: {
+                    enemy.stateTimer -= deltaTime;
+                    if (enemy.stateTimer <= 0) {
+                        enemy.state = AI_ATTACK;
+                        enemy.stateTimer = 0.2f; // Attack active duration
+                        enemy.warningTelegraph.active = false;
+
+                        // Spawn Active Damage Hitbox
+                        float dmg = (enemy.type == ENEMY_SHATTERED_TITAN) ? 35.0f : 15.0f;
+                        enemy.currentHitbox = { {0,0,0,0}, enemy.warningTelegraph.circleCenter, enemy.warningTelegraph.circleRadius, true, dmg, true, 0.2f };
+                    }
+                } break;
+
+                // 4. ATTACK EXECUTION STATE
+                case AI_ATTACK: {
+                    enemy.stateTimer -= deltaTime;
+                    if (enemy.currentHitbox.active) {
+                        // Check Collision with Player
+                        if (CheckCollisionCircles(enemy.currentHitbox.circleCenter, enemy.currentHitbox.circleRadius, player.position, player.radius)) {
+                            enemy.currentHitbox.active = false;
+
+                            // Check if Player Parried the Attack!
+                            if (player.isParrying) {
+                                enemy.state = AI_STAGGER;
+                                enemy.stateTimer = 1.5f; // Enemy staggered for 1.5s
+                                combatLog = TextFormat("PERFECT PARRY! %s is Staggered!", enemy.name.c_str());
+                            } else {
+                                player.health -= enemy.currentHitbox.damage;
+                                combatLog = TextFormat("%s struck player for %.0f Damage!", enemy.name.c_str(), enemy.currentHitbox.damage);
+                            }
+                        }
+                    }
+
+                    if (enemy.stateTimer <= 0) {
+                        enemy.currentHitbox.active = false;
+                        enemy.attackCooldown = enemy.isEnraged ? 1.0f : 2.0f;
+                        enemy.state = AI_CHASE;
+                    }
+                } break;
+
+                // 5. STAGGERED / GUARD-BROKEN STATE
+                case AI_STAGGER: {
+                    enemy.stateTimer -= deltaTime;
+                    if (enemy.stateTimer <= 0) {
+                        enemy.state = AI_CHASE;
+                    }
+                } break;
+
+                case AI_RETREAT: break;
+            }
+
+            // =========================================================================
+            // 3. PLAYER HITS ENEMY & SHIELD MECHANIC
+            // =========================================================================
+            if (player.attackHitbox.active) {
+                if (CheckCollisionCircles(player.attackHitbox.circleCenter, player.attackHitbox.circleRadius, enemy.position, enemy.radius)) {
+                    player.attackHitbox.active = false;
+
+                    // Golem Shield Blocking Check
+                    Vector2 enemyToPlayer = Vector2Normalize(Vector2Subtract(player.position, enemy.position));
+                    if (enemy.isShielded && enemy.state != AI_STAGGER) {
+                        combatLog = "BLOCKED! The Golem shielded your attack from the front!";
+                    } else {
+                        float finalDmg = (enemy.state == AI_STAGGER) ? player.attackHitbox.damage * 2.0f : player.attackHitbox.damage;
+                        enemy.health -= finalDmg;
+                        combatLog = TextFormat("Dealt %.0f Damage to %s!", finalDmg, enemy.name.c_str());
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // 4. RENDERING PASS
+        // =========================================================================
+        BeginDrawing();
+        ClearBackground(GetColor(0x121218FF));
+
+        // Draw Arena Boundaries
+        DrawRectangleLines(20, 20, screenWidth - 40, screenHeight - 40, DARKGRAY);
+
+        // --- DRAW ENEMIES & AI OVERLAYS ---
+        for (const auto& enemy : enemies) {
+            if (enemy.health <= 0) continue;
+
+            // Draw Aggro Sight Range Circle
+            DrawCircleLines(enemy.position.x, enemy.position.y, enemy.aggroRange, Fade(GRAY, 0.15f));
+
+            // Draw Enemy Base Model
+            Color baseCol = RED;
+            if (enemy.type == ENEMY_GOLEM) baseCol = DARKBLUE;
+            if (enemy.type == ENEMY_SHATTERED_TITAN) baseCol = enemy.isEnraged ? ORANGE : PURPLE;
+            if (enemy.state == AI_STAGGER) baseCol = YELLOW; // Staggered visual
+
+            DrawCircleV(enemy.position, enemy.radius, baseCol);
+            DrawCircleLines(enemy.position.x, enemy.position.y, enemy.radius, RAYWHITE);
+
+            // Draw Golem Shield Visual
+            if (enemy.isShielded && enemy.state != AI_STAGGER) {
+                DrawCircleSectorLines(enemy.position, enemy.radius + 6.0f, 0, 180, 16, CYAN);
+            }
+
+            // Draw Telegraph Warning Circle
+            if (enemy.warningTelegraph.active) {
+                DrawCircleV(enemy.warningTelegraph.circleCenter, enemy.warningTelegraph.circleRadius, Fade(RED, 0.35f));
+                DrawCircleLines(enemy.warningTelegraph.circleCenter.x, enemy.warningTelegraph.circleCenter.y, enemy.warningTelegraph.circleRadius, RED);
+            }
+
+            // Draw Active Hitbox
+            if (enemy.currentHitbox.active) {
+                DrawCircleV(enemy.currentHitbox.circleCenter, enemy.currentHitbox.circleRadius, Fade(MAROON, 0.6f));
+            }
+
+            // Enemy Name & HP Bar Above Head
+            DrawText(enemy.name.c_str(), enemy.position.x - 40, enemy.position.y - enemy.radius - 28, 12, RAYWHITE);
+            DrawRectangle(enemy.position.x - 30, enemy.position.y - enemy.radius - 12, 60, 6, DARKGRAY);
+            float hpRatio = math.clamp(enemy.health / enemy.maxHealth, 0.0f, 1.0f);
+            DrawRectangle(enemy.position.x - 30, enemy.position.y - enemy.radius - 12, hpRatio * 60, 6, RED);
+        }
+
+        // --- DRAW PLAYER ---
+        if (player.isParrying) DrawCircleLines(player.position.x, player.position.y, player.radius + 12.0f, GOLD);
+        DrawCircleV(player.position, player.radius, GOLD);
+        DrawLineEx(player.position, Vector2Add(player.position, Vector2Scale(player.facingDir, 28.0f)), 3.0f, RAYWHITE);
+
+        if (player.attackHitbox.active) {
+            DrawCircleV(player.attackHitbox.circleCenter, player.attackHitbox.circleRadius, Fade(ORANGE, 0.4f));
+        }
+
+        // --- BOSS DYNAMIC TOP HEALTH BAR ---
+        for (const auto& enemy : enemies) {
+            if (enemy.type == ENEMY_SHATTERED_TITAN && enemy.health > 0) {
+                DrawRectangle(screenWidth / 2 - 250, 25, 500, 22, GetColor(0x1E1E28FF));
+                DrawRectangleLines(screenWidth / 2 - 250, 25, 500, 22, GOLD);
+                
+                float bossHpRatio = enemy.health / enemy.maxHealth;
+                Color bossBarCol = enemy.isEnraged ? ORANGE : PURPLE;
+                DrawRectangle(screenWidth / 2 - 248, 27, bossHpRatio * 496, 18, bossBarCol);
+
+                std::string bossTitle = enemy.isEnraged ? "THE SHATTERED TITAN (ENRAGED)" : "THE SHATTERED TITAN";
+                DrawText(bossTitle.c_str(), screenWidth / 2 - MeasureText(bossTitle.c_str(), 14) / 2, 29, 14, RAYWHITE);
+            }
+        }
+
+        // --- HUD OVERLAY ---
+        DrawRectangle(20, screenHeight - 110, 420, 90, GetColor(0x181822FF));
+        DrawRectangleLines(20, screenHeight - 110, 420, 90, GRAY);
+        
+        DrawText("PLAYER HEALTH", 35, screenHeight - 98, 14, RAYWHITE);
+        DrawRectangle(140, screenHeight - 96, 280, 14, DARKGRAY);
+        DrawRectangle(140, screenHeight - 96, (player.health / player.maxHealth) * 280, 14, GREEN);
+
+        DrawText("[LMB] Attack | [RMB] Parry Strikes", 35, screenHeight - 72, 14, LIGHTGRAY);
+        DrawText(combatLog.c_str(), 35, screenHeight - 45, 12, GOLD);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
