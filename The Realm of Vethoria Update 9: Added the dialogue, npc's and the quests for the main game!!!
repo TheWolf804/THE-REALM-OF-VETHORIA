@@ -1,0 +1,340 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Quest States
+enum QuestStatus {
+    QUEST_INACTIVE,
+    QUEST_ACTIVE,
+    QUEST_COMPLETED
+};
+
+// Quest Data Structure
+struct Quest {
+    int id;
+    std::string title;
+    std::string description;
+    QuestStatus status = QUEST_INACTIVE;
+    int currentObjectiveCount = 0;
+    int requiredObjectiveCount = 1;
+    int rewardGold = 250;
+    int rewardXP = 150;
+};
+
+// Dialogue Choice
+struct DialogueChoice {
+    std::string choiceText;
+    int nextNodeId; // -1 to close dialogue, -2 to accept quest, -3 to open shop
+};
+
+// Dialogue Node
+struct DialogueNode {
+    int id;
+    std::string speakerName;
+    std::string text;
+    std::vector<DialogueChoice> choices;
+};
+
+// NPC Entity Structure
+struct NPCEntity {
+    int id;
+    std::string name;
+    Vector2 position;
+    Color color;
+    int startDialogueNodeId;
+    bool isVendor;
+};
+
+// Shop Item Structure
+struct ShopItem {
+    int id;
+    std::string name;
+    int cost;
+    std::string effectText;
+};
+
+// Player Narrative & Inventory Profile
+struct StoryPlayer {
+    Vector2 position = { 200.0f, 360.0f };
+    float speed = 250.0f;
+    float radius = 20.0f;
+    int gold = 300;
+    int healthPotions = 1;
+};
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Dialogue, Quest & Vendor Engine");
+    SetTargetFPS(60);
+
+    StoryPlayer player;
+
+    // --- 1. SETUP QUESTS ---
+    Quest titanQuest = { 
+        1, 
+        "Shattered Threat", 
+        "Slay the Shattered Titan in the arena to protect Aethelgard.", 
+        QUEST_INACTIVE, 
+        0, 1, 500, 300 
+    };
+
+    // --- 2. SETUP DIALOGUE TREE ---
+    std::vector<DialogueNode> dialogueTree = {
+        // Elder Kael (ID 1)
+        { 
+            1, "Elder Kael", 
+            "Greetings, traveler. Dark times have come to Vethoria. Corrupted titans bleed raw Starlight Ore into our lands.",
+            { {"What can I do to help?", 2}, {"I must be going.", -1} }
+        },
+        { 
+            2, "Elder Kael", 
+            "The Shattered Titan guards the northern pass. Defeat it, and I shall reward you with gold and ancient relic knowledge.",
+            { {"I will slay the beast! (Accept Quest)", -2}, {"I am not ready yet.", -1} }
+        },
+        { 
+            3, "Elder Kael", 
+            "Thank you for taking up the blade! Return to me once the Titan is destroyed.",
+            { {"Understood.", -1} }
+        },
+
+        // Blacksmith Grim (ID 4)
+        { 
+            4, "Blacksmith Grim", 
+            "Need sharp steel or sturdy potions? My forge is at your service, provided you have gold.",
+            { {"Show me your wares. (Open Shop)", -3}, {"Just looking around.", -1} }
+        }
+    };
+
+    // --- 3. SETUP NPCS ---
+    std::vector<NPCEntity> npcs = {
+        { 1, "Elder Kael", { 400.0f, 300.0f }, GOLD, 1, false },
+        { 2, "Blacksmith Grim", { 800.0f, 300.0f }, ORANGE, 4, true }
+    };
+
+    // --- 4. SETUP VENDOR SHOP ITEMS ---
+    std::vector<ShopItem> shopItems = {
+        { 1, "Aether Healing Elixir", 50, "Restores +50 Health instantly." },
+        { 2, "Starlight Blade Polish", 150, "Permanently adds +10% Melee Damage." },
+        { 3, "Dragon Scale Shield", 250, "Increases Armor Defense rating." }
+    };
+
+    // UI States
+    bool inDialogue = false;
+    int currentDialogueNodeId = -1;
+    NPCEntity* currentActiveNPC = nullptr;
+
+    bool inShop = false;
+    std::string eventLog = "Welcome to the Village of Aethelgard. Press [E] near NPCs to talk.";
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // =========================================================================
+        // 1. PLAYER CONTROLS
+        // =========================================================================
+        if (!inDialogue && !inShop) {
+            Vector2 inputDir = { 0.0f, 0.0f };
+            if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+            if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+            if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+            if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+            if (Vector2Length(inputDir) > 0) {
+                inputDir = Vector2Normalize(inputDir);
+                player.position = Vector2Add(player.position, Vector2Scale(inputDir, player.speed * deltaTime));
+            }
+        }
+
+        // =========================================================================
+        // 2. INTERACTION ENGINE
+        // =========================================================================
+        if (IsKeyPressed(KEY_E) && !inDialogue && !inShop) {
+            for (auto& npc : npcs) {
+                if (CheckCollisionCircles(player.position, 45.0f, npc.position, 25.0f)) {
+                    currentActiveNPC = &npc;
+                    inDialogue = true;
+
+                    // Check if quest is already active for Elder Kael
+                    if (npc.id == 1 && titanQuest.status == QUEST_ACTIVE) {
+                        currentDialogueNodeId = 3;
+                    } else {
+                        currentDialogueNodeId = npc.startDialogueNodeId;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Simulating Quest Objective Completion (Press [K] to kill Titan)
+        if (IsKeyPressed(KEY_K) && titanQuest.status == QUEST_ACTIVE) {
+            titanQuest.currentObjectiveCount = 1;
+            titanQuest.status = QUEST_COMPLETED;
+            player.gold += titanQuest.rewardGold;
+            eventLog = TextFormat("QUEST COMPLETE! Earned +%d Gold & +%d XP!", titanQuest.rewardGold, titanQuest.rewardXP);
+        }
+
+        // Close Windows with ESC
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            inDialogue = false;
+            inShop = false;
+        }
+
+        // =========================================================================
+        // 3. RENDERING PASS
+        // =========================================================================
+        BeginDrawing();
+        ClearBackground(GetColor(0x121217FF));
+
+        // Draw Village Arena Ground
+        for (int i = 0; i < screenWidth; i += 80) DrawLine(i, 0, i, screenHeight, GetColor(0x1A1A22FF));
+        for (int i = 0; i < screenHeight; i += 80) DrawLine(0, i, screenWidth, i, GetColor(0x1A1A22FF));
+
+        // --- DRAW NPCS ---
+        for (const auto& npc : npcs) {
+            DrawCircleV(npc.position, 22.0f, npc.color);
+            DrawCircleLines(npc.position.x, npc.position.y, 22.0f, RAYWHITE);
+            DrawText(npc.name.c_str(), npc.position.x - 40, npc.position.y - 40, 14, RAYWHITE);
+
+            // Interaction Prompt
+            if (CheckCollisionCircles(player.position, 45.0f, npc.position, 25.0f) && !inDialogue && !inShop) {
+                DrawText("[E] TALK", npc.position.x - 25, npc.position.y - 60, 12, YELLOW);
+            }
+        }
+
+        // --- DRAW PLAYER ---
+        DrawCircleV(player.position, player.radius, SKYBLUE);
+        DrawCircleLines(player.position.x, player.position.y, player.radius, RAYWHITE);
+
+        // --- TOP RIGHT QUEST LOG TRACKER ---
+        DrawRectangle(screenWidth - 340, 20, 320, 120, GetColor(0x1A1A24FF));
+        DrawRectangleLines(screenWidth - 340, 20, 320, 120, GOLD);
+        DrawText("ACTIVE QUESTS", screenWidth - 325, 32, 16, GOLD);
+
+        if (titanQuest.status == QUEST_INACTIVE) {
+            DrawText("No active quests.", screenWidth - 325, 60, 14, GRAY);
+            DrawText("Talk to Elder Kael.", screenWidth - 325, 80, 12, LIGHTGRAY);
+        } else if (titanQuest.status == QUEST_ACTIVE) {
+            DrawText(titanQuest.title.c_str(), screenWidth - 325, 60, 14, RAYWHITE);
+            DrawText(TextFormat("Objective: Slay Titan (%d/1)", titanQuest.currentObjectiveCount), screenWidth - 325, 80, 12, GREEN);
+            DrawText("[K] Debug: Simulate Titan Kill", screenWidth - 325, 100, 10, YELLOW);
+        } else if (titanQuest.status == QUEST_COMPLETED) {
+            DrawText(titanQuest.title.c_str(), screenWidth - 325, 60, 14, RAYWHITE);
+            DrawText("Status: COMPLETED (Rewards Claimed)", screenWidth - 325, 80, 12, GOLD);
+        }
+
+        // --- HUD BOTTOM BANNER ---
+        DrawRectangle(20, screenHeight - 60, 450, 40, GetColor(0x181822FF));
+        DrawRectangleLines(20, screenHeight - 60, 450, 40, GRAY);
+        DrawText(TextFormat("Gold: %d g | Potions: %d", player.gold, player.healthPotions), 35, screenHeight - 48, 16, GOLD);
+
+        // Event Notification Banner
+        DrawText(eventLog.c_str(), 20, 20, 14, SKYBLUE);
+
+        // =========================================================================
+        // 4. DIALOGUE UI OVERLAY
+        // =========================================================================
+        if (inDialogue && currentDialogueNodeId != -1) {
+            // Find Node
+            DialogueNode* currentNode = nullptr;
+            for (auto& node : dialogueTree) {
+                if (node.id == currentDialogueNodeId) {
+                    currentNode = &node;
+                    break;
+                }
+            }
+
+            if (currentNode) {
+                // Bottom Dialogue Box
+                Rectangle dlgBox = { 100, (float)screenHeight - 220, (float)screenWidth - 200, 180 };
+                DrawRectangleRec(dlgBox, GetColor(0x0E0E14FF));
+                DrawRectangleLinesEx(dlgBox, 2, GOLD);
+
+                // Speaker Name Header
+                DrawText(currentNode->speakerName.c_str(), dlgBox.x + 20, dlgBox.y + 15, 20, GOLD);
+                DrawLine(dlgBox.x + 20, dlgBox.y + 40, dlgBox.x + 300, dlgBox.y + 40, GRAY);
+
+                // Speaker Body Text
+                DrawText(currentNode->text.c_str(), dlgBox.x + 20, dlgBox.y + 55, 16, RAYWHITE);
+
+                // Draw Interactive Choice Buttons
+                for (size_t i = 0; i < currentNode->choices.size(); i++) {
+                    Rectangle choiceBtn = { dlgBox.x + 20, dlgBox.y + 100 + (i * 35), (float)dlgBox.width - 40, 30 };
+                    
+                    Vector2 mousePos = GetMousePosition();
+                    bool isHovered = CheckCollisionPointRec(mousePos, choiceBtn);
+
+                    DrawRectangleRec(choiceBtn, isHovered ? MAROON : GetColor(0x1C1C28FF));
+                    DrawRectangleLinesRec(choiceBtn, isHovered ? GOLD : DARKGRAY);
+                    DrawText(currentNode->choices[i].choiceText.c_str(), choiceBtn.x + 15, choiceBtn.y + 7, 14, RAYWHITE);
+
+                    // Click Choice Action
+                    if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                        int nextNode = currentNode->choices[i].nextNodeId;
+
+                        if (nextNode == -1) {
+                            inDialogue = false; // Exit
+                        } else if (nextNode == -2) {
+                            titanQuest.status = QUEST_ACTIVE;
+                            eventLog = "QUEST ACCEPTED: Shattered Threat!";
+                            inDialogue = false;
+                        } else if (nextNode == -3) {
+                            inDialogue = false;
+                            inShop = true; // Open Vendor Shop
+                        } else {
+                            currentDialogueNodeId = nextNode; // Transition to next node
+                        }
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // 5. VENDOR SHOP UI OVERLAY
+        // =========================================================================
+        if (inShop) {
+            DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.8f));
+
+            Rectangle shopRec = { 200, 100, (float)screenWidth - 400, (float)screenHeight - 200 };
+            DrawRectangleRec(shopRec, GetColor(0x161620FF));
+            DrawRectangleLinesEx(shopRec, 2, ORANGE);
+
+            DrawText("BLACKSMITH GRIM'S SHOP", shopRec.x + 30, shopRec.y + 25, 24, ORANGE);
+            DrawText(TextFormat("Your Gold: %d g", player.gold), shopRec.x + 600, shopRec.y + 25, 18, GOLD);
+            DrawLine(shopRec.x + 30, shopRec.y + 60, shopRec.x + shopRec.width - 30, shopRec.y + 60, GRAY);
+
+            for (size_t i = 0; i < shopItems.size(); i++) {
+                Rectangle itemRow = { shopRec.x + 30, shopRec.y + 80 + (i * 70), shopRec.width - 60, 60 };
+                DrawRectangleRec(itemRow, GetColor(0x222230FF));
+                DrawRectangleLinesRec(itemRow, 1, GRAY);
+
+                DrawText(shopItems[i].name.c_str(), itemRow.x + 15, itemRow.y + 12, 18, RAYWHITE);
+                DrawText(shopItems[i].effectText.c_str(), itemRow.x + 15, itemRow.y + 35, 12, LIGHTGRAY);
+
+                // Buy Button
+                Rectangle buyBtn = { itemRow.x + itemRow.width - 120, itemRow.y + 12, 100, 36 };
+                bool canAfford = (player.gold >= shopItems[i].cost);
+                bool isHovered = CheckCollisionPointRec(GetMousePosition(), buyBtn);
+
+                Color btnCol = canAfford ? (isHovered ? DARKGREEN : GREEN) : DARKGRAY;
+                DrawRectangleRec(buyBtn, btnCol);
+                DrawText(TextFormat("BUY (%dg)", shopItems[i].cost), buyBtn.x + 12, buyBtn.y + 10, 14, RAYWHITE);
+
+                if (isHovered && canAfford && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    player.gold -= shopItems[i].cost;
+                    if (shopItems[i].id == 1) player.healthPotions++;
+                    eventLog = TextFormat("PURCHASED: %s!", shopItems[i].name.c_str());
+                }
+            }
+
+            DrawText("Press [ESC] to Exit Shop", shopRec.x + 30, shopRec.y + shopRec.height - 35, 14, GRAY);
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
