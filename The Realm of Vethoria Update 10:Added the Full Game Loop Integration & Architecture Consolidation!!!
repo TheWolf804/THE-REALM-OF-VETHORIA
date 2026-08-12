@@ -1,0 +1,378 @@
+#ifndef GAME_TYPES_H
+#define GAME_TYPES_H
+
+#include "raylib.h"
+#include <string>
+#include <vector>
+
+// Game States
+enum GameState {
+    STATE_MAIN_MENU,
+    STATE_OVERWORLD,
+    STATE_COMBAT,
+    STATE_DIALOGUE,
+    STATE_SHOP,
+    STATE_INVENTORY,
+    STATE_SKILL_TREE,
+    STATE_GAME_OVER
+};
+
+// Item Rarities
+enum ItemRarity {
+    RARITY_COMMON,
+    RARITY_UNCOMMON,
+    RARITY_RARE,
+    RARITY_EPIC,
+    RARITY_LEGENDARY,
+    RARITY_GODFORGED
+};
+
+// Equipment Slots
+enum EquipSlot {
+    SLOT_WEAPON,
+    SLOT_ARMOR,
+    SLOT_ACCESSORY,
+    SLOT_NONE
+};
+
+// Equipment Item
+struct EquipmentItem {
+    int id;
+    std::string name;
+    EquipSlot slot;
+    ItemRarity rarity;
+    int itemLevel;
+    float attackBonus;
+    float defenseBonus;
+    float healthBonus;
+    float critChanceBonus;
+    std::string description;
+};
+
+// Quest Status
+enum QuestStatus {
+    QUEST_INACTIVE,
+    QUEST_ACTIVE,
+    QUEST_COMPLETED
+};
+
+// Quest Structure
+struct Quest {
+    int id;
+    std::string title;
+    std::string description;
+    QuestStatus status = QUEST_INACTIVE;
+    int currentObjectiveCount = 0;
+    int requiredObjectiveCount = 1;
+    int rewardGold = 250;
+    int rewardXP = 150;
+};
+
+// Combined Player Core Stats
+struct PlayerStats {
+    Vector2 worldPos = { 320.0f, 320.0f };
+    Vector2 combatPos = { 200.0f, 360.0f };
+    Vector2 facingDir = { 1.0f, 0.0f };
+    float speed = 250.0f;
+    float radius = 20.0f;
+
+    // Attributes
+    float health = 200.0f;
+    float maxHealth = 200.0f;
+    float baseAttack = 20.0f;
+    float baseDefense = 10.0f;
+    float critChance = 0.10f;
+    
+    // Level & Gold
+    int level = 1;
+    int xp = 0;
+    int xpToNextLevel = 100;
+    int gold = 250;
+    int skillPoints = 2;
+
+    // Combat states
+    bool isParrying = false;
+    float parryTimer = 0.0f;
+    float attackCooldown = 0.0f;
+};
+#ifndef WORLD_ENGINE_H
+#define WORLD_ENGINE_H
+
+#include "raylib.h"
+#include "GameTypes.h"
+#include <vector>
+
+const int MAP_WIDTH = 25;
+const int MAP_HEIGHT = 25;
+const int TILE_SIZE = 64;
+
+enum TileType {
+    TILE_GRASS,
+    TILE_DIRT,
+    TILE_WALL,
+    TILE_WATER
+};
+
+struct WorldZone {
+    std::string name;
+    int mapData[MAP_HEIGHT][MAP_WIDTH];
+};
+
+class WorldEngine {
+public:
+    WorldZone currentZone;
+    Camera2D camera;
+
+    void Init() {
+        currentZone.name = "Aethelgard Overworld";
+        camera.target = { 0, 0 };
+        camera.offset = { 1280 / 2.0f, 720 / 2.0f };
+        camera.rotation = 0.0f;
+        camera.zoom = 1.0f;
+
+        for (int y = 0; y < MAP_HEIGHT; y++) {
+            for (int x = 0; x < MAP_WIDTH; x++) {
+                if (x == 0 || y == 0 || x == MAP_WIDTH - 1 || y == MAP_HEIGHT - 1) {
+                    currentZone.mapData[y][x] = TILE_WALL;
+                } else if (x == 12 && y > 5 && y < 18) {
+                    currentZone.mapData[y][x] = TILE_WATER;
+                } else {
+                    currentZone.mapData[y][x] = (x % 3 == 0) ? TILE_DIRT : TILE_GRASS;
+                }
+            }
+        }
+    }
+
+    bool CheckCollision(Vector2 nextPos, float radius) {
+        int tileXMin = (int)((nextPos.x - radius) / TILE_SIZE);
+        int tileXMax = (int)((nextPos.x + radius) / TILE_SIZE);
+        int tileYMin = (int)((nextPos.y - radius) / TILE_SIZE);
+        int tileYMax = (int)((nextPos.y + radius) / TILE_SIZE);
+
+        for (int y = tileYMin; y <= tileYMax; y++) {
+            for (int x = tileXMin; x <= tileXMax; x++) {
+                if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
+                    int tileType = currentZone.mapData[y][x];
+                    if (tileType == TILE_WALL || tileType == TILE_WATER) {
+                        Rectangle tileRec = { (float)x * TILE_SIZE, (float)y * TILE_SIZE, (float)TILE_SIZE, (float)TILE_SIZE };
+                        if (CheckCollisionCircleRec(nextPos, radius, tileRec)) return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    void Render(Vector2 playerPos) {
+        camera.target = playerPos;
+        BeginMode2D(camera);
+
+        for (int y = 0; y < MAP_HEIGHT; y++) {
+            for (int x = 0; x < MAP_WIDTH; x++) {
+                Rectangle tileRec = { (float)x * TILE_SIZE, (float)y * TILE_SIZE, (float)TILE_SIZE, (float)TILE_SIZE };
+                Color c = (currentZone.mapData[y][x] == TILE_WALL) ? DARKGRAY : 
+                          (currentZone.mapData[y][x] == TILE_WATER) ? BLUE :
+                          (currentZone.mapData[y][x] == TILE_DIRT) ? DARKBROWN : DARKGREEN;
+
+                DrawRectangleRec(tileRec, c);
+                DrawRectangleLinesEx(tileRec, 1, Fade(BLACK, 0.2f));
+            }
+        }
+
+        DrawCircleV(playerPos, 20.0f, SKYBLUE);
+        EndMode2D();
+    }
+};
+
+#endif // WORLD_ENGINE_H
+#include "raylib.h"
+#include "raymath.h"
+#include "include/GameTypes.h"
+#include "include/WorldEngine.h"
+#include <vector>
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Action RPG Engine");
+    SetTargetFPS(60);
+
+    // Engine Core Systems
+    GameState currentState = STATE_MAIN_MENU;
+    PlayerStats player;
+    WorldEngine world;
+    world.Init();
+
+    // Quest System
+    Quest titanQuest = { 1, "Shattered Threat", "Defeat the Shattered Titan in the Arena.", QUEST_INACTIVE, 0, 1, 500, 300 };
+
+    // Combat Boss Setup
+    Vector2 bossPos = { 900.0f, 360.0f };
+    float bossHealth = 500.0f;
+    float bossMaxHealth = 500.0f;
+
+    std::string uiNotification = "Press [ENTER] to Start Game";
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // Global State Shortcuts
+        if (IsKeyPressed(KEY_I) && currentState == STATE_OVERWORLD) currentState = STATE_INVENTORY;
+        else if (IsKeyPressed(KEY_I) && currentState == STATE_INVENTORY) currentState = STATE_OVERWORLD;
+
+        if (IsKeyPressed(KEY_K) && currentState == STATE_OVERWORLD) currentState = STATE_SKILL_TREE;
+        else if (IsKeyPressed(KEY_K) && currentState == STATE_SKILL_TREE) currentState = STATE_OVERWORLD;
+
+        // =========================================================================
+        // STATE UPDATES
+        // =========================================================================
+        switch (currentState) {
+            case STATE_MAIN_MENU: {
+                if (IsKeyPressed(KEY_ENTER)) {
+                    currentState = STATE_OVERWORLD;
+                    uiNotification = "Exploration Active: Walk to the Red Portal for Combat!";
+                }
+            } break;
+
+            case STATE_OVERWORLD: {
+                Vector2 inputDir = { 0.0f, 0.0f };
+                if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+                if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+                if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+                if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+                if (Vector2Length(inputDir) > 0) {
+                    inputDir = Vector2Normalize(inputDir);
+                    Vector2 nextPos = Vector2Add(player.worldPos, Vector2Scale(inputDir, player.speed * deltaTime));
+                    if (!world.CheckCollision(nextPos, player.radius)) {
+                        player.worldPos = nextPos;
+                    }
+                }
+
+                // Check Proximity to Arena Portal (placed at world coord 800, 800)
+                if (Vector2Distance(player.worldPos, { 800.0f, 800.0f }) < 50.0f) {
+                    if (IsKeyPressed(KEY_E)) {
+                        currentState = STATE_COMBAT;
+                        titanQuest.status = QUEST_ACTIVE;
+                        uiNotification = "COMBAT STARTED: Defeat the Shattered Titan!";
+                    }
+                }
+            } break;
+
+            case STATE_COMBAT: {
+                // Combat Controls
+                Vector2 inputDir = { 0.0f, 0.0f };
+                if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+                if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+                if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+                if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+                if (Vector2Length(inputDir) > 0) {
+                    inputDir = Vector2Normalize(inputDir);
+                    player.combatPos = Vector2Add(player.combatPos, Vector2Scale(inputDir, player.speed * deltaTime));
+                }
+
+                // Player Melee Strike
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    if (Vector2Distance(player.combatPos, bossPos) < 100.0f) {
+                        bossHealth -= player.baseAttack;
+                        if (bossHealth <= 0) {
+                            bossHealth = 0;
+                            titanQuest.status = QUEST_COMPLETED;
+                            player.gold += titanQuest.rewardGold;
+                            player.xp += titanQuest.rewardXP;
+                            currentState = STATE_OVERWORLD;
+                            uiNotification = "VICTORY! Titan Slain. +500 Gold & +300 XP Earned!";
+                        }
+                    }
+                }
+            } break;
+
+            case STATE_INVENTORY:
+            case STATE_SKILL_TREE:
+            case STATE_DIALOGUE:
+            case STATE_SHOP:
+            case STATE_GAME_OVER:
+                if (IsKeyPressed(KEY_ESCAPE)) currentState = STATE_OVERWORLD;
+                break;
+        }
+
+        // =========================================================================
+        // RENDERING PASS
+        // =========================================================================
+        BeginDrawing();
+        ClearBackground(GetColor(0x101016FF));
+
+        switch (currentState) {
+            case STATE_MAIN_MENU: {
+                DrawText("VETHORIA: CHRONICLES OF AETHEL", screenWidth / 2 - MeasureText("VETHORIA: CHRONICLES OF AETHEL", 32) / 2, 220, 32, GOLD);
+                DrawText("Press [ENTER] to Begin Adventure", screenWidth / 2 - MeasureText("Press [ENTER] to Begin Adventure", 18) / 2, 360, 18, RAYWHITE);
+            } break;
+
+            case STATE_OVERWORLD: {
+                world.Render(player.worldPos);
+
+                // Render Arena Portal in World Space
+                BeginMode2D(world.camera);
+                    DrawCircle(800, 800, 35, RED);
+                    DrawCircleLines(800, 800, 35, GOLD);
+                    if (Vector2Distance(player.worldPos, { 800.0f, 800.0f }) < 60.0f) {
+                        DrawText("[E] Enter Arena", 745, 740, 14, YELLOW);
+                    }
+                EndMode2D();
+
+                // HUD Overlay
+                DrawRectangle(20, 20, 320, 70, GetColor(0x181824FF));
+                DrawRectangleLines(20, 20, 320, 70, GOLD);
+                DrawText(TextFormat("Level %d | Gold: %d g | XP: %d", player.level, player.gold, player.xp), 35, 32, 16, GOLD);
+                DrawText("[I] Backpack | [K] Skill Tree", 35, 56, 12, LIGHTGRAY);
+            } break;
+
+            case STATE_COMBAT: {
+                DrawRectangleLines(20, 20, screenWidth - 40, screenHeight - 40, RED);
+
+                // Draw Player & Boss
+                DrawCircleV(player.combatPos, player.radius, SKYBLUE);
+                DrawCircleV(bossPos, 50.0f, PURPLE);
+
+                // Boss HP Bar
+                DrawRectangle(screenWidth / 2 - 200, 40, 400, 20, DARKGRAY);
+                DrawRectangle(screenWidth / 2 - 200, 40, (bossHealth / bossMaxHealth) * 400, 20, PURPLE);
+                DrawText("SHATTERED TITAN", screenWidth / 2 - 70, 43, 14, RAYWHITE);
+
+                DrawText("Click [LMB] Near Boss to Attack!", 35, screenHeight - 50, 16, YELLOW);
+            } break;
+
+            case STATE_INVENTORY: {
+                DrawRectangle(200, 100, 880, 520, GetColor(0x161622FF));
+                DrawRectangleLines(200, 100, 880, 520, SKYBLUE);
+                DrawText("EQUIPMENT & BACKPACK INVENTORY", 230, 130, 24, SKYBLUE);
+                DrawText("Press [ESC] or [I] to Close Window", 230, 570, 14, LIGHTGRAY);
+            } break;
+
+            case STATE_SKILL_TREE: {
+                DrawRectangle(200, 100, 880, 520, GetColor(0x161622FF));
+                DrawRectangleLines(200, 100, 880, 520, GOLD);
+                DrawText("STARLIGHT SKILL TREE MATRIX", 230, 130, 24, GOLD);
+                DrawText(TextFormat("Available Skill Points: %d", player.skillPoints), 230, 170, 16, GREEN);
+                DrawText("Press [ESC] or [K] to Close Window", 230, 570, 14, LIGHTGRAY);
+            } break;
+
+            default: break;
+        }
+
+        // Notification Banner Across Top
+        if (currentState != STATE_MAIN_MENU) {
+            DrawRectangle(screenWidth / 2 - 300, 10, 600, 30, GetColor(0x1A1A26FF));
+            DrawRectangleLines(screenWidth / 2 - 300, 10, 600, 30, GOLD);
+            DrawText(uiNotification.c_str(), screenWidth / 2 - MeasureText(uiNotification.c_str(), 12) / 2, 18, 12, GREEN);
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+#endif // GAME_TYPES_H
