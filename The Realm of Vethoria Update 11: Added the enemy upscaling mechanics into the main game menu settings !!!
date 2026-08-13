@@ -1,0 +1,295 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Game States
+enum GameState {
+    STATE_MAIN_MENU,
+    STATE_SETTINGS,
+    STATE_OVERWORLD,
+    STATE_COMBAT
+};
+
+// Enemy Upscaling Modes
+enum UpscaleMode {
+    UPSCALE_OFF,           // Enemies stay at base level
+    UPSCALE_MATCH_PLAYER,  // Underleveled enemies scale up to Player Level
+    UPSCALE_OVERLEVEL      // Enemies scale up to Player Level + 3 (Hardcore Challenge)
+};
+
+// Global Settings Data
+struct GameSettings {
+    UpscaleMode upscaleMode = UPSCALE_MATCH_PLAYER;
+    bool showScalingHUD = true; // Displays scaling badges over enemies
+};
+
+// Base Enemy Archetype
+struct ScaledEnemy {
+    std::string name;
+    int baseLevel;
+    float baseMaxHealth;
+    float baseDamage;
+    float baseSpeed;
+
+    // Computed / Scaled Combat Stats
+    int currentLevel;
+    float maxHealth;
+    float currentHealth;
+    float damage;
+    float speed;
+    Vector2 position;
+    float radius;
+};
+
+// Player Profile
+struct PlayerProfile {
+    int level = 12; // Player starts at Level 12 for testing
+    float health = 250.0f;
+    float maxHealth = 250.0f;
+    float baseAttack = 30.0f;
+    Vector2 combatPos = { 200.0f, 360.0f };
+};
+
+// Helper: Recalculate Enemy Stats using Scaling Formula
+void ApplyEnemyUpscaling(ScaledEnemy& enemy, int playerLevel, UpscaleMode mode) {
+    int targetLevel = enemy.baseLevel;
+
+    if (mode == UPSCALE_MATCH_PLAYER) {
+        if (enemy.baseLevel < playerLevel) {
+            targetLevel = playerLevel;
+        }
+    } else if (mode == UPSCALE_OVERLEVEL) {
+        if (enemy.baseLevel < playerLevel + 3) {
+            targetLevel = playerLevel + 3;
+        }
+    }
+
+    enemy.currentLevel = targetLevel;
+    int levelDiff = enemy.currentLevel - enemy.baseLevel;
+
+    if (levelDiff > 0) {
+        // Scaling Multipliers
+        float hpMult = 1.0f + (levelDiff * 0.22f);    // +22% HP per level diff
+        float dmgMult = 1.0f + (levelDiff * 0.16f);   // +16% Damage per level diff
+        float speedBonus = math.min(30.0f, levelDiff * 2.5f); // Minor speed scaling
+
+        enemy.maxHealth = enemy.baseMaxHealth * hpMult;
+        enemy.damage = enemy.baseDamage * dmgMult;
+        enemy.speed = enemy.baseSpeed + speedBonus;
+    } else {
+        // Default Base Stats
+        enemy.maxHealth = enemy.baseMaxHealth;
+        enemy.damage = enemy.baseDamage;
+        enemy.speed = enemy.baseSpeed;
+    }
+
+    enemy.currentHealth = enemy.maxHealth;
+}
+
+// Helper Button Renderer
+bool DrawButton(Rectangle bounds, const char* text, Color baseColor, Color hoverColor) {
+    Vector2 mousePoint = GetMousePosition();
+    bool isHovered = CheckCollisionPointRec(mousePoint, bounds);
+    
+    DrawRectangleRec(bounds, isHovered ? hoverColor : baseColor);
+    DrawRectangleLinesEx(bounds, 2, isHovered ? RAYWHITE : DARKGRAY);
+    
+    int fontSize = 18;
+    int textWidth = MeasureText(text, fontSize);
+    DrawText(text, bounds.x + (bounds.width - textWidth) / 2, bounds.y + (bounds.height - fontSize) / 2, fontSize, RAYWHITE);
+    
+    return isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+}
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Enemy Upscaling & Difficulty Engine");
+    SetTargetFPS(60);
+
+    GameState currentState = STATE_MAIN_MENU;
+    GameSettings settings;
+    PlayerProfile player;
+
+    // Define Base Enemies (Originally Low Level)
+    ScaledEnemy scavengerBase = { "Starlight Scavenger", 3, 80.0f, 12.0f, 180.0f, 3, 80.0f, 80.0f, 12.0f, 180.0f, { 800.0f, 260.0f }, 22.0f };
+    ScaledEnemy golemBase = { "Corrupted Golem", 6, 200.0f, 25.0f, 110.0f, 6, 200.0f, 200.0f, 25.0f, 110.0f, { 800.0f, 480.0f }, 32.0f };
+
+    std::vector<ScaledEnemy> combatEnemies;
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // =========================================================================
+        // 1. STATE LOGIC
+        // =========================================================================
+        if (currentState == STATE_COMBAT) {
+            // Player Movement in Combat
+            Vector2 inputDir = { 0.0f, 0.0f };
+            if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+            if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+            if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+            if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+            if (Vector2Length(inputDir) > 0) {
+                inputDir = Vector2Normalize(inputDir);
+                player.combatPos = Vector2Add(player.combatPos, Vector2Scale(inputDir, 260.0f * deltaTime));
+            }
+
+            // Player Attack (Click LMB)
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                for (auto& enemy : combatEnemies) {
+                    if (enemy.currentHealth > 0 && Vector2Distance(player.combatPos, enemy.position) < 80.0f) {
+                        enemy.currentHealth -= player.baseAttack;
+                        if (enemy.currentHealth < 0) enemy.currentHealth = 0;
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // 2. RENDERING PASS
+        // =========================================================================
+        BeginDrawing();
+        ClearBackground(GetColor(0x121218FF));
+
+        switch (currentState) {
+            
+            // --- MAIN MENU ---
+            case STATE_MAIN_MENU: {
+                DrawText("VETHORIA", screenWidth / 2 - MeasureText("VETHORIA", 60) / 2, 140, 60, GOLD);
+                DrawText("REALM OF THE SHATTERED SUN", screenWidth / 2 - MeasureText("REALM OF THE SHATTERED SUN", 20) / 2, 210, 20, LIGHTGRAY);
+
+                if (DrawButton({ (float)screenWidth / 2 - 140, 310, 280, 50 }, "ENTER COMBAT TEST", MAROON, RED)) {
+                    // Initialize & Scale Enemies for Combat
+                    combatEnemies.clear();
+                    
+                    ScaledEnemy e1 = scavengerBase;
+                    ApplyEnemyUpscaling(e1, player.level, settings.upscaleMode);
+                    combatEnemies.push_back(e1);
+
+                    ScaledEnemy e2 = golemBase;
+                    ApplyEnemyUpscaling(e2, player.level, settings.upscaleMode);
+                    combatEnemies.push_back(e2);
+
+                    currentState = STATE_COMBAT;
+                }
+
+                if (DrawButton({ (float)screenWidth / 2 - 140, 380, 280, 50 }, "DIFFICULTY & UPSCALING", DARKGRAY, GRAY)) {
+                    currentState = STATE_SETTINGS;
+                }
+
+                if (DrawButton({ (float)screenWidth / 2 - 140, 450, 280, 50 }, "EXIT GAME", DARKGRAY, GRAY)) {
+                    CloseWindow();
+                    return 0;
+                }
+            } break;
+
+            // --- SETTINGS & UPSCALING MENU ---
+            case STATE_SETTINGS: {
+                DrawText("GAMEPLAY & DIFFICULTY SETTINGS", 80, 60, 28, GOLD);
+                DrawLine(80, 100, screenWidth - 80, 100, GRAY);
+
+                DrawText("ENEMY UPSCALING SETTING:", 80, 140, 20, RAYWHITE);
+                DrawText("Automatically increases low-level monster stats to keep early zones challenging.", 80, 170, 14, LIGHTGRAY);
+
+                // Mode Option 1: OFF
+                Color btnOffCol = (settings.upscaleMode == UPSCALE_OFF) ? MAROON : DARKGRAY;
+                if (DrawButton({ 80, 210, 240, 45 }, "UPSCALE: OFF", btnOffCol, RED)) {
+                    settings.upscaleMode = UPSCALE_OFF;
+                }
+
+                // Mode Option 2: MATCH PLAYER
+                Color btnMatchCol = (settings.upscaleMode == UPSCALE_MATCH_PLAYER) ? MAROON : DARKGRAY;
+                if (DrawButton({ 340, 210, 280, 45 }, "UPSCALE: MATCH PLAYER", btnMatchCol, RED)) {
+                    settings.upscaleMode = UPSCALE_MATCH_PLAYER;
+                }
+
+                // Mode Option 3: OVERLEVEL
+                Color btnOverCol = (settings.upscaleMode == UPSCALE_OVERLEVEL) ? MAROON : DARKGRAY;
+                if (DrawButton({ 640, 210, 300, 45 }, "UPSCALE: OVERLEVEL (+3)", btnOverCol, RED)) {
+                    settings.upscaleMode = UPSCALE_OVERLEVEL;
+                }
+
+                // Mode Description Box
+                DrawRectangle(80, 280, 860, 80, GetColor(0x1C1C26FF));
+                DrawRectangleLines(80, 280, 860, 80, GRAY);
+
+                if (settings.upscaleMode == UPSCALE_OFF) {
+                    DrawText("Mode: OFF - Enemies remain at their natural zone levels.", 100, 300, 16, RAYWHITE);
+                    DrawText("Level 3 enemies stay Level 3, allowing you to easily one-shot them when overleveled.", 100, 325, 14, GRAY);
+                } else if (settings.upscaleMode == UPSCALE_MATCH_PLAYER) {
+                    DrawText("Mode: MATCH PLAYER - Enemies automatically scale up to your exact Level.", 100, 300, 16, GREEN);
+                    DrawText("Early-game enemies gain scaled Health and Damage while yielding bonus XP and better loot.", 100, 325, 14, GRAY);
+                } else if (settings.upscaleMode == UPSCALE_OVERLEVEL) {
+                    DrawText("Mode: OVERLEVEL (+3) - Enemies scale up to Player Level + 3.", 100, 300, 16, ORANGE);
+                    DrawText("HARDCORE MODE: All enemies deal significantly higher damage and possess massive HP pools.", 100, 325, 14, GRAY);
+                }
+
+                // Player Level Adjustment Controls for Testing
+                DrawText("TEST PLAYER LEVEL:", 80, 400, 20, GOLD);
+                DrawText(TextFormat("Current Player Level: %d", player.level), 80, 435, 18, RAYWHITE);
+
+                if (DrawButton({ 320, 430, 40, 30 }, "-", DARKGRAY, RED)) {
+                    if (player.level > 1) player.level--;
+                }
+                if (DrawButton({ 370, 430, 40, 30 }, "+", DARKGRAY, GREEN)) {
+                    if (player.level < 50) player.level++;
+                }
+
+                // Back Button
+                if (DrawButton({ 80, (float)screenHeight - 80, 180, 45 }, "BACK TO MENU", DARKGRAY, GRAY)) {
+                    currentState = STATE_MAIN_MENU;
+                }
+            } break;
+
+            // --- COMBAT ARENA TEST ---
+            case STATE_COMBAT: {
+                DrawText("COMBAT ARENA (ENEMY UPSCALING DEMO)", 40, 30, 22, GOLD);
+                DrawText(TextFormat("Player Level: %d", player.level), 40, 60, 16, GREEN);
+
+                // Draw Enemies
+                for (const auto& enemy : combatEnemies) {
+                    if (enemy.currentHealth <= 0) continue;
+
+                    Color circleCol = (enemy.currentLevel > enemy.baseLevel) ? ORANGE : RED;
+                    DrawCircleV(enemy.position, enemy.radius, circleCol);
+                    DrawCircleLines(enemy.position.x, enemy.position.y, enemy.radius, RAYWHITE);
+
+                    // Name & Scaled Level Badge Above Head
+                    std::string lvlBadge = TextFormat("%s [Lvl %d]", enemy.name.c_str(), enemy.currentLevel);
+                    DrawText(lvlBadge.c_str(), enemy.position.x - 60, enemy.position.y - enemy.radius - 40, 14, RAYWHITE);
+
+                    if (enemy.currentLevel > enemy.baseLevel) {
+                        DrawText(TextFormat("(Base Lvl: %d)", enemy.baseLevel), enemy.position.x - 35, enemy.position.y - enemy.radius - 25, 11, ORANGE);
+                    }
+
+                    // Stat Readout HUD Box
+                    DrawRectangle(enemy.position.x - 70, enemy.position.y + enemy.radius + 10, 140, 50, GetColor(0x181822FF));
+                    DrawRectangleLines(enemy.position.x - 70, enemy.position.y + enemy.radius + 10, 140, 50, GRAY);
+
+                    DrawText(TextFormat("HP: %.0f / %.0f", enemy.currentHealth, enemy.maxHealth), enemy.position.x - 62, enemy.position.y + enemy.radius + 16, 11, GREEN);
+                    DrawText(TextFormat("Damage: %.1f", enemy.damage), enemy.position.x - 62, enemy.position.y + enemy.radius + 30, 11, RED);
+                    DrawText(TextFormat("Speed: %.0f", enemy.speed), enemy.position.x - 62, enemy.position.y + enemy.radius + 44, 11, SKYBLUE);
+                }
+
+                // Draw Player
+                DrawCircleV(player.combatPos, 20.0f, SKYBLUE);
+                DrawCircleLines(player.combatPos.x, player.combatPos.y, 20.0f, RAYWHITE);
+
+                DrawText("[WASD] Move | [LMB] Strike Nearby Enemy", 40, screenHeight - 60, 16, LIGHTGRAY);
+
+                if (DrawButton({ (float)screenWidth - 200, (float)screenHeight - 60, 160, 40 }, "MAIN MENU", DARKGRAY, GRAY)) {
+                    currentState = STATE_MAIN_MENU;
+                }
+            } break;
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
