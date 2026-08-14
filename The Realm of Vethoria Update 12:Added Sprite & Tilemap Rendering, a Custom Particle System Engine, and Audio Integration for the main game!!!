@@ -1,0 +1,194 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <cmath>
+
+// --- PARTICLE SYSTEM ENGINE ---
+struct Particle {
+    Vector2 position;
+    Vector2 velocity;
+    Color color;
+    float size;
+    float alpha;
+    float maxLife;
+    float currentLife;
+    bool active = false;
+};
+
+class ParticleEngine {
+private:
+    static const int MAX_PARTICLES = 300;
+    Particle particles[MAX_PARTICLES];
+
+public:
+    ParticleEngine() {
+        for (int i = 0; i < MAX_PARTICLES; i++) particles[i].active = false;
+    }
+
+    void EmitBurst(Vector2 pos, Color col, int count, float minSpeed, float maxSpeed) {
+        int spawned = 0;
+        for (int i = 0; i < MAX_PARTICLES && spawned < count; i++) {
+            if (!particles[i].active) {
+                particles[i].active = true;
+                particles[i].position = pos;
+                
+                float angle = (float)GetRandomValue(0, 360) * DEG2RAD;
+                float speed = (float)GetRandomValue((int)minSpeed, (int)maxSpeed);
+                particles[i].velocity = { cosf(angle) * speed, sinf(angle) * speed };
+                
+                particles[i].color = col;
+                particles[i].size = (float)GetRandomValue(3, 7);
+                particles[i].maxLife = (float)GetRandomValue(20, 50) / 100.0f;
+                particles[i].currentLife = particles[i].maxLife;
+                particles[i].alpha = 1.0f;
+                spawned++;
+            }
+        }
+    }
+
+    void Update(float dt) {
+        for (int i = 0; i < MAX_PARTICLES; i++) {
+            if (particles[i].active) {
+                particles[i].currentLife -= dt;
+                if (particles[i].currentLife <= 0.0f) {
+                    particles[i].active = false;
+                    continue;
+                }
+
+                // Physics update
+                particles[i].position = Vector2Add(particles[i].position, Vector2Scale(particles[i].velocity, dt));
+                particles[i].velocity = Vector2Scale(particles[i].velocity, 0.92f); // Friction
+                particles[i].alpha = particles[i].currentLife / particles[i].maxLife;
+            }
+        }
+    }
+
+    void Draw() {
+        for (int i = 0; i < MAX_PARTICLES; i++) {
+            if (particles[i].active) {
+                Color c = particles[i].color;
+                c.a = (unsigned char)(particles[i].alpha * 255);
+                DrawCircleV(particles[i].position, particles[i].size * particles[i].alpha, c);
+            }
+        }
+    }
+};
+
+// --- PROCEDURAL AUDIO GENERATOR ---
+Sound GenerateImpactSound() {
+    Wave wave = { 0 };
+    wave.frameCount = 44100 / 10; // 0.1 second sound
+    wave.sampleRate = 44100;
+    wave.sampleSize = 16;
+    wave.channels = 1;
+
+    short* samples = (short*)RL_MALLOC(wave.frameCount * sizeof(short));
+    for (unsigned int i = 0; i < wave.frameCount; i++) {
+        float t = (float)i / wave.sampleRate;
+        float freq = 120.0f - (t * 800.0f); // Fast downward pitch shift
+        float noise = (float)(GetRandomValue(-100, 100)) / 100.0f;
+        float sample = sinf(2.0f * PI * freq * t) * (1.0f - (float)i / wave.frameCount) + (noise * 0.2f);
+        samples[i] = (short)(sample * 16000);
+    }
+    wave.data = samples;
+    Sound sound = LoadSoundFromWave(wave);
+    UnloadWave(wave);
+    return sound;
+}
+
+// --- MAIN ENGINE LOOP ---
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Visual & Audio Polish Engine");
+    InitAudioDevice();
+    SetTargetFPS(60);
+
+    ParticleEngine particleSystem;
+    Sound hitSound = GenerateImpactSound();
+
+    // Procedural Tile Textures
+    Image grassImg = GenImageCellular(64, 64, 8);
+    ImageColorReplace(&grassImg, WHITE, DARKGREEN);
+    Texture2D grassTexture = LoadTextureFromImage(grassImg);
+    UnloadImage(grassImg);
+
+    Vector2 playerPos = { 200.0f, 360.0f };
+    Vector2 enemyPos = { 800.0f, 360.0f };
+    float enemyHealth = 100.0f;
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // --- 1. CONTROLS & LOGIC ---
+        Vector2 inputDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+        if (Vector2Length(inputDir) > 0) {
+            inputDir = Vector2Normalize(inputDir);
+            playerPos = Vector2Add(playerPos, Vector2Scale(inputDir, 280.0f * deltaTime));
+        }
+
+        // Melee Strike & Particle Burst Trigger
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (Vector2Distance(playerPos, enemyPos) < 110.0f) {
+                enemyHealth -= 20.0f;
+                if (enemyHealth < 0) enemyHealth = 0;
+
+                // Play Audio
+                PlaySound(hitSound);
+
+                // Emit Sparks & Blood Particles
+                particleSystem.EmitBurst(enemyPos, GOLD, 15, 120.0f, 350.0f);
+                particleSystem.EmitBurst(enemyPos, RED, 20, 80.0f, 250.0f);
+            }
+        }
+
+        particleSystem.Update(deltaTime);
+
+        // --- 2. RENDERING PASS ---
+        BeginDrawing();
+        ClearBackground(GetColor(0x111116FF));
+
+        // Draw Tiled Ground
+        for (int y = 0; y < screenHeight; y += 64) {
+            for (int x = 0; x < screenWidth; x += 64) {
+                DrawTexture(grassTexture, x, y, WHITE);
+            }
+        }
+
+        // Draw Player with Glow Effect
+        DrawCircleV(playerPos, 24.0f, Fade(SKYBLUE, 0.3f));
+        DrawCircleV(playerPos, 18.0f, SKYBLUE);
+        DrawCircleLines(playerPos.x, playerPos.y, 18.0f, RAYWHITE);
+
+        // Draw Enemy
+        if (enemyHealth > 0) {
+            DrawCircleV(enemyPos, 32.0f, MAROON);
+            DrawCircleLines(enemyPos.x, enemyPos.y, 32.0f, RED);
+            DrawRectangle(enemyPos.x - 30, enemyPos.y - 50, 60, 8, RED);
+            DrawRectangle(enemyPos.x - 30, enemyPos.y - 50, (enemyHealth / 100.0f) * 60, 8, GREEN);
+        }
+
+        // Draw Particle Engine Layer
+        particleSystem.Draw();
+
+        // UI Header
+        DrawRectangle(20, 20, 480, 40, GetColor(0x181824FF));
+        DrawRectangleLines(20, 20, 480, 40, GOLD);
+        DrawText("[LMB] Strike Enemy | Walk close and hit to trigger audio & particles!", 30, 32, 13, RAYWHITE);
+
+        EndDrawing();
+    }
+
+    UnloadTexture(grassTexture);
+    UnloadSound(hitSound);
+    CloseAudioDevice();
+    CloseWindow();
+    return 0;
+}
