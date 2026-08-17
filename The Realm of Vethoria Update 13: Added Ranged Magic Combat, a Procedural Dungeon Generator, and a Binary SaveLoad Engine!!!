@@ -1,0 +1,257 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <fstream>
+
+// --- PROCEDURAL DUNGEON GENERATOR ---
+const int GRID_COLS = 16;
+const int GRID_ROWS = 10;
+const int CELL_SIZE = 80;
+
+enum CellType { CELL_WALL, CELL_FLOOR };
+
+struct Room {
+    int x, y, width, height;
+};
+
+struct DungeonMap {
+    CellType grid[GRID_ROWS][GRID_COLS];
+    std::vector<Room> rooms;
+
+    void Generate() {
+        // Initialize all as walls
+        for (int r = 0; r < GRID_ROWS; r++) {
+            for (int c = 0; c < GRID_COLS; c++) {
+                grid[r][c] = CELL_WALL;
+            }
+        }
+
+        rooms.clear();
+        int numRooms = GetRandomValue(3, 5);
+
+        for (int i = 0; i < numRooms; i++) {
+            int w = GetRandomValue(3, 4);
+            int h = GetRandomValue(3, 4);
+            int x = GetRandomValue(1, GRID_COLS - w - 1);
+            int y = GetRandomValue(1, GRID_ROWS - h - 1);
+
+            Room newRoom = { x, y, w, h };
+            rooms.push_back(newRoom);
+
+            // Carve floor
+            for (int r = y; r < y + h; r++) {
+                for (int c = x; c < x + w; c++) {
+                    grid[r][c] = CELL_FLOOR;
+                }
+            }
+
+            // Connect to previous room with corridor
+            if (i > 0) {
+                int prevX = rooms[i - 1].x + rooms[i - 1].width / 2;
+                int prevY = rooms[i - 1].y + rooms[i - 1].height / 2;
+                int currX = x + w / 2;
+                int currY = y + h / 2;
+
+                // Horizontal corridor
+                int startX = math.min(prevX, currX);
+                int endX = math.max(prevX, currX);
+                for (int c = startX; c <= endX; c++) grid[prevY][c] = CELL_FLOOR;
+
+                // Vertical corridor
+                int startY = math.min(prevY, currY);
+                int endY = math.max(prevY, currY);
+                for (int r = startY; r <= endY; r++) grid[r][currX] = CELL_FLOOR;
+            }
+        }
+    }
+};
+
+// --- MAGIC SPELLS & PROJECTILES ---
+struct Projectile {
+    Vector2 position;
+    Vector2 velocity;
+    float radius;
+    float damage;
+    Color color;
+    bool active = false;
+};
+
+// --- SAVE GAME DATA STRUCTURE ---
+struct SaveData {
+    float playerPosX;
+    float playerPosY;
+    float health;
+    float mana;
+    int gold;
+};
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Deep Systems & Persistence");
+    SetTargetFPS(60);
+
+    DungeonMap dungeon;
+    dungeon.Generate();
+
+    // Player State
+    Vector2 playerPos = { 200.0f, 200.0f };
+    float playerHealth = 200.0f;
+    float playerMaxHealth = 200.0f;
+    float playerMana = 100.0f;
+    float playerMaxMana = 100.0f;
+    int playerGold = 150;
+
+    // Projectile Pool
+    std::vector<Projectile> projectiles;
+
+    // Dummy Enemy Position
+    Vector2 enemyPos = { 800.0f, 400.0f };
+    float enemyHealth = 150.0f;
+
+    std::string notification = "Press [1] Fireball, [2] Starlight Beam | [F5] Save, [F9] Load | [R] Regrate Dungeon";
+
+    while (!WindowShouldClose()) {
+        float deltaTime = GetFrameTime();
+
+        // Mana Regeneration
+        playerMana += 15.0f * deltaTime;
+        if (playerMana > playerMaxMana) playerMana = playerMaxMana;
+
+        // --- 1. CONTROLS & LOGIC ---
+        Vector2 inputDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+        if (Vector2Length(inputDir) > 0) {
+            inputDir = Vector2Normalize(inputDir);
+            playerPos = Vector2Add(playerPos, Vector2Scale(inputDir, 240.0f * deltaTime));
+        }
+
+        // Regenerate Dungeon Map
+        if (IsKeyPressed(KEY_R)) {
+            dungeon.Generate();
+            notification = "Procedural Dungeon Regenerated!";
+        }
+
+        // Spell 1: Fireball
+        if (IsKeyPressed(KEY_ONE) && playerMana >= 25.0f) {
+            playerMana -= 25.0f;
+            Vector2 mousePos = GetMousePosition();
+            Vector2 dir = Vector2Normalize(Vector2Subtract(mousePos, playerPos));
+            projectiles.push_back({ playerPos, Vector2Scale(dir, 500.0f), 12.0f, 35.0f, ORANGE, true });
+        }
+
+        // Spell 2: Starlight Beam (Fast, High-Damage)
+        if (IsKeyPressed(KEY_TWO) && playerMana >= 45.0f) {
+            playerMana -= 45.0f;
+            Vector2 mousePos = GetMousePosition();
+            Vector2 dir = Vector2Normalize(Vector2Subtract(mousePos, playerPos));
+            projectiles.push_back({ playerPos, Vector2Scale(dir, 900.0f), 8.0f, 65.0f, PURPLE, true });
+        }
+
+        // Update Projectiles
+        for (auto& p : projectiles) {
+            if (p.active) {
+                p.position = Vector2Add(p.position, Vector2Scale(p.velocity, deltaTime));
+
+                // Collision with Enemy
+                if (Vector2Distance(p.position, enemyPos) < 30.0f) {
+                    enemyHealth -= p.damage;
+                    if (enemyHealth < 0) enemyHealth = 0;
+                    p.active = false;
+                }
+
+                // Out of Bounds
+                if (p.position.x < 0 || p.position.x > screenWidth || p.position.y < 0 || p.position.y > screenHeight) {
+                    p.active = false;
+                }
+            }
+        }
+
+        // --- SAVE / LOAD ENGINE ---
+        if (IsKeyPressed(KEY_F5)) {
+            SaveData save = { playerPos.x, playerPos.y, playerHealth, playerMana, playerGold };
+            std::ofstream file("vethoria_save.dat", std::ios::binary);
+            file.write((char*)&save, sizeof(SaveData));
+            file.close();
+            notification = "GAME SAVED successfully to vethoria_save.dat!";
+        }
+
+        if (IsKeyPressed(KEY_F9)) {
+            std::ifstream file("vethoria_save.dat", std::ios::binary);
+            if (file.is_open()) {
+                SaveData save;
+                file.read((char*)&save, sizeof(SaveData));
+                file.close();
+                playerPos = { save.playerPosX, save.playerPosY };
+                playerHealth = save.health;
+                playerMana = save.mana;
+                playerGold = save.gold;
+                notification = "GAME LOADED from disk!";
+            } else {
+                notification = "ERROR: No save file found!";
+            }
+        }
+
+        // --- 2. RENDERING PASS ---
+        BeginDrawing();
+        ClearBackground(GetColor(0x0E0E14FF));
+
+        // Render Procedural Dungeon Grid
+        for (int r = 0; r < GRID_ROWS; r++) {
+            for (int c = 0; c < GRID_COLS; c++) {
+                Rectangle cellRec = { (float)c * CELL_SIZE, (float)r * CELL_SIZE, (float)CELL_SIZE, (float)CELL_SIZE };
+                if (dungeon.grid[r][c] == CELL_WALL) {
+                    DrawRectangleRec(cellRec, GetColor(0x181824FF));
+                    DrawRectangleLinesEx(cellRec, 1, DARKGRAY);
+                } else {
+                    DrawRectangleRec(cellRec, GetColor(0x282838FF));
+                }
+            }
+        }
+
+        // Render Projectiles
+        for (const auto& p : projectiles) {
+            if (p.active) {
+                DrawCircleV(p.position, p.radius, p.color);
+                DrawCircleV(p.position, p.radius * 0.5f, RAYWHITE);
+            }
+        }
+
+        // Render Enemy
+        if (enemyHealth > 0) {
+            DrawCircleV(enemyPos, 28.0f, RED);
+            DrawText("Training Dummy", enemyPos.x - 45, enemyPos.y - 45, 12, RAYWHITE);
+            DrawRectangle(enemyPos.x - 30, enemyPos.y + 35, 60, 6, RED);
+            DrawRectangle(enemyPos.x - 30, enemyPos.y + 35, (enemyHealth / 150.0f) * 60, 6, GREEN);
+        }
+
+        // Render Player
+        DrawCircleV(playerPos, 20.0f, SKYBLUE);
+        DrawCircleLines(playerPos.x, playerPos.y, 20.0f, RAYWHITE);
+
+        // Render HUD Bars
+        DrawRectangle(20, 20, 200, 18, DARKGRAY);
+        DrawRectangle(20, 20, (playerHealth / playerMaxHealth) * 200, 18, RED);
+        DrawText(TextFormat("HP: %.0f/%.0f", playerHealth, playerMaxHealth), 25, 22, 12, RAYWHITE);
+
+        DrawRectangle(20, 45, 200, 18, DARKGRAY);
+        DrawRectangle(20, 45, (playerMana / playerMaxMana) * 200, 18, BLUE);
+        DrawText(TextFormat("MP: %.0f/%.0f", playerMana, playerMaxMana), 25, 47, 12, RAYWHITE);
+
+        // Notification Banner
+        DrawRectangle(20, screenHeight - 45, screenWidth - 40, 30, GetColor(0x1A1A26FF));
+        DrawRectangleLines(20, screenHeight - 45, screenWidth - 40, 30, GOLD);
+        DrawText(notification.c_str(), 35, screenHeight - 38, 14, GREEN);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
