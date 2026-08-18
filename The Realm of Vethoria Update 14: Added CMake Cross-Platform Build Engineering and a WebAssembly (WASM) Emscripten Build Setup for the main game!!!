@@ -1,0 +1,111 @@
+cmake_minimum_required(VERSION 3.14)
+project(VethoriaGame CXX C)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# --- EMSCRIPTEN (WASM) DETECT ---
+if(EMSCRIPTEN)
+    message(STATUS "Building for WebAssembly via Emscripten...")
+    
+    # Emscripten flags: WebGL2, Asyncify (for Raylib main loops), Memory allocation
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s USE_GLFW=3 -s FULL_ES3=1 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY")
+    set(CMAKE_EXECUTABLE_SUFFIX ".html")
+endif()
+
+# --- FETCH RAYLIB DEPENDENCY ---
+include(FetchContent)
+FetchContent_Declare(
+    raylib
+    GIT_REPOSITORY https://github.com/raysan5/raylib.git
+    GIT_TAG        5.0
+)
+FetchContent_MakeAvailable(raylib)
+
+# --- TARGET DEFINITION ---
+add_executable(VethoriaGame src/main.cpp)
+
+target_link_libraries(VethoriaGame PRIVATE raylib)
+
+if(EMSCRIPTEN)
+    # Embed custom shell template if available
+    set_target_properties(VethoriaGame PROPERTIES
+        LINK_FLAGS "--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
+    )
+#include "raylib.h"
+#include "raymath.h"
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#endif
+
+// Engine Shared State
+struct EngineState {
+    Vector2 playerPos = { 640.0f, 360.0f };
+    float speed = 300.0f;
+};
+
+EngineState state;
+
+// Main Frame Function (Called once per frame on WASM and Native)
+void UpdateDrawFrame() {
+    float dt = GetFrameTime();
+
+    // 1. Controls
+    Vector2 dir = { 0.0f, 0.0f };
+    if (IsKeyDown(KEY_W)) dir.y -= 1.0f;
+    if (IsKeyDown(KEY_S)) dir.y += 1.0f;
+    if (IsKeyDown(KEY_A)) dir.x -= 1.0f;
+    if (IsKeyDown(KEY_D)) dir.x += 1.0f;
+
+    if (Vector2Length(dir) > 0) {
+        dir = Vector2Normalize(dir);
+        state.playerPos = Vector2Add(state.playerPos, Vector2Scale(dir, state.speed * dt));
+    }
+
+    // 2. Render Pass
+    BeginDrawing();
+    ClearBackground(GetColor(0x111118FF));
+
+    // World Grid
+    for (int i = 0; i < 1280; i += 80) DrawLine(i, 0, i, 720, GetColor(0x1C1C28FF));
+    for (int i = 0; i < 720; i += 80) DrawLine(0, i, 1280, i, GetColor(0x1C1C28FF));
+
+    // Player
+    DrawCircleV(state.playerPos, 22.0f, SKYBLUE);
+    DrawCircleLines(state.playerPos.x, state.playerPos.y, 22.0f, RAYWHITE);
+
+    // WASM Status Badge
+#if defined(__EMSCRIPTEN__)
+    DrawText("BUILD TARGET: WEB ASSEMBLY (WASM)", 20, 20, 16, GREEN);
+#else
+    DrawText("BUILD TARGET: NATIVE DESKTOP", 20, 20, 16, GOLD);
+#endif
+
+    DrawText("[WASD] Move Player in Cross-Platform Engine", 20, 50, 14, LIGHTGRAY);
+
+    EndDrawing();
+}
+
+int main() {
+    InitWindow(1280, 720, "Vethoria: WebAssembly & Cross-Platform Engine");
+    SetTargetFPS(60);
+
+#if defined(__EMSCRIPTEN__)
+    // Hand execution loop over to the browser canvas
+    emscripten_set_main_loop(UpdateDrawFrame, 0, 1);
+#else
+    // Standard Desktop Loop
+    while (!WindowShouldClose()) {
+        UpdateDrawFrame();
+    }
+    CloseWindow();
+#endif
+
+    return 0;
+}
+mkdir build && cd build
+cmake ..
+cmake --build .
+./VethoriaGame
+endif()
