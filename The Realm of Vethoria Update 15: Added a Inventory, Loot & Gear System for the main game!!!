@@ -1,0 +1,304 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Item Rarities
+enum Rarity { RARITY_COMMON, RARITY_UNCOMMON, RARITY_RARE, RARITY_EPIC, RARITY_LEGENDARY };
+
+// Item Types
+enum ItemType { ITEM_WEAPON, ITEM_ARMOR, ITEM_POTION };
+
+struct Item {
+    std::string name;
+    ItemType type;
+    Rarity rarity;
+    int bonusAttack;
+    int bonusDefense;
+    int bonusHealth;
+    Color color;
+};
+
+// Player Stats with Gear Modifiers
+struct PlayerState {
+    Vector2 pos = { 300.0f, 360.0f };
+    int baseAttack = 15;
+    int baseDefense = 5;
+    int baseMaxHealth = 100;
+    int currentHealth = 100;
+
+    // Computed Stats
+    int totalAttack = 15;
+    int totalDefense = 5;
+    int totalMaxHealth = 100;
+
+    // Gear Slots
+    Item weaponSlot;
+    bool hasWeapon = false;
+    
+    Item armorSlot;
+    bool hasArmor = false;
+
+    // Inventory Grid (16 slots)
+    Item inventory[16];
+    bool slotOccupied[16] = { false };
+
+    void RecalculateStats() {
+        totalAttack = baseAttack + (hasWeapon ? weaponSlot.bonusAttack : 0);
+        totalDefense = baseDefense + (hasArmor ? armorSlot.bonusDefense : 0);
+        totalMaxHealth = baseMaxHealth + (hasArmor ? armorSlot.bonusHealth : 0);
+        if (currentHealth > totalMaxHealth) currentHealth = totalMaxHealth;
+    }
+};
+
+// Helper: Get Rarity Color
+Color GetRarityColor(Rarity r) {
+    switch (r) {
+        case RARITY_COMMON:    return LIGHTGRAY;
+        case RARITY_UNCOMMON:  return GREEN;
+        case RARITY_RARE:      return SKYBLUE;
+        case RARITY_EPIC:      return PURPLE;
+        case RARITY_LEGENDARY: return GOLD;
+    }
+    return WHITE;
+}
+
+// Loot Generator Factory
+Item GenerateRandomLoot() {
+    int rarityRoll = GetRandomValue(1, 100);
+    Rarity rarity = RARITY_COMMON;
+    if (rarityRoll > 95) rarity = RARITY_LEGENDARY;
+    else if (rarityRoll > 80) rarity = RARITY_EPIC;
+    else if (rarityRoll > 60) rarity = RARITY_RARE;
+    else if (rarityRoll > 35) rarity = RARITY_UNCOMMON;
+
+    int typeRoll = GetRandomValue(0, 2);
+    Item item;
+    item.rarity = rarity;
+    item.color = GetRarityColor(rarity);
+
+    int scale = (int)rarity + 1;
+
+    if (typeRoll == 0) { // Weapon
+        item.type = ITEM_WEAPON;
+        item.bonusAttack = scale * GetRandomValue(5, 12);
+        item.bonusDefense = 0;
+        item.bonusHealth = 0;
+        
+        const char* prefixes[] = { "Rusty", "Forged", "Runed", "Celestial", "Mythic" };
+        const char* names[] = { "Sword", "Blade", "Warhammer", "Greatsword" };
+        item.name = TextFormat("%s %s", prefixes[(int)rarity], names[GetRandomValue(0, 3)]);
+    } 
+    else if (typeRoll == 1) { // Armor
+        item.type = ITEM_ARMOR;
+        item.bonusAttack = 0;
+        item.bonusDefense = scale * GetRandomValue(3, 8);
+        item.bonusHealth = scale * GetRandomValue(15, 35);
+        
+        const char* prefixes[] = { "Padded", "Reinforced", "Guardian's", "Shadow", "Dragon" };
+        const char* names[] = { "Vest", "Plate", "Cuirass", "Aegis" };
+        item.name = TextFormat("%s %s", prefixes[(int)rarity], names[GetRandomValue(0, 3)]);
+    } 
+    else { // Potion
+        item.type = ITEM_POTION;
+        item.bonusAttack = 0;
+        item.bonusDefense = 0;
+        item.bonusHealth = scale * 25;
+        item.name = "Health Elixir";
+        item.color = RED;
+    }
+
+    return item;
+}
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Inventory & Loot Engine");
+    SetTargetFPS(60);
+
+    PlayerState player;
+    bool showInventory = true;
+    int hoveredSlot = -1;
+
+    // Starter Items
+    player.inventory[0] = { "Apprentice Blade", ITEM_WEAPON, RARITY_COMMON, 6, 0, 0, LIGHTGRAY };
+    player.slotOccupied[0] = true;
+
+    player.inventory[1] = { "Iron Breastplate", ITEM_ARMOR, RARITY_UNCOMMON, 0, 4, 20, GREEN };
+    player.slotOccupied[1] = true;
+
+    player.RecalculateStats();
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Toggle Inventory Panel
+        if (IsKeyPressed(KEY_E)) showInventory = !showInventory;
+
+        // Generate Loot Hotkey
+        if (IsKeyPressed(KEY_SPACE)) {
+            Item loot = GenerateRandomLoot();
+            for (int i = 0; i < 16; i++) {
+                if (!player.slotOccupied[i]) {
+                    player.inventory[i] = loot;
+                    player.slotOccupied[i] = true;
+                    break;
+                }
+            }
+        }
+
+        // Controls
+        Vector2 dir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) dir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) dir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) dir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) dir.x += 1.0f;
+
+        if (Vector2Length(dir) > 0) {
+            dir = Vector2Normalize(dir);
+            player.pos = Vector2Add(player.pos, Vector2Scale(dir, 250.0f * dt));
+        }
+
+        // --- RENDERING PASS ---
+        BeginDrawing();
+        ClearBackground(GetColor(0x101016FF));
+
+        // Draw Player
+        DrawCircleV(player.pos, 20.0f, SKYBLUE);
+        DrawCircleLines(player.pos.x, player.pos.y, 20.0f, RAYWHITE);
+
+        // World Hints
+        DrawText("[WASD] Move | [E] Toggle Inventory | [SPACE] Drop Random Loot", 20, screenHeight - 40, 16, LIGHTGRAY);
+
+        // --- INVENTORY UI OVERLAY ---
+        if (showInventory) {
+            Rectangle panelRec = { 800, 40, 440, 640 };
+            DrawRectangleRec(panelRec, GetColor(0x181822EE));
+            DrawRectangleLinesEx(panelRec, 2, GOLD);
+
+            DrawText("INVENTORY & GEAR", panelRec.x + 20, panelRec.y + 20, 22, GOLD);
+
+            // Stat Summary Box
+            DrawRectangle(panelRec.x + 20, panelRec.y + 60, 400, 80, GetColor(0x222230FF));
+            DrawRectangleLines(panelRec.x + 20, panelRec.y + 60, 400, 80, GRAY);
+
+            DrawText(TextFormat("Attack:  %d  (+%d)", player.totalAttack, player.totalAttack - player.baseAttack), panelRec.x + 35, panelRec.y + 70, 16, RED);
+            DrawText(TextFormat("Defense: %d  (+%d)", player.totalDefense, player.totalDefense - player.baseDefense), panelRec.x + 35, panelRec.y + 92, 16, SKYBLUE);
+            DrawText(TextFormat("Max HP:  %d  (+%d)", player.totalMaxHealth, player.totalMaxHealth - player.baseMaxHealth), panelRec.x + 35, panelRec.y + 114, 16, GREEN);
+
+            // Equipment Slots
+            DrawText("EQUIPPED GEAR", panelRec.x + 20, panelRec.y + 160, 16, RAYWHITE);
+
+            // Weapon Slot
+            Rectangle weaponRec = { panelRec.x + 20, panelRec.y + 190, 190, 50 };
+            DrawRectangleRec(weaponRec, GetColor(0x282836FF));
+            DrawRectangleLinesEx(weaponRec, 1, player.hasWeapon ? player.weaponSlot.color : GRAY);
+            DrawText(player.hasWeapon ? player.weaponSlot.name.c_str() : "Empty Weapon Slot", weaponRec.x + 10, weaponRec.y + 16, 13, player.hasWeapon ? player.weaponSlot.color : GRAY);
+
+            if (player.hasWeapon && CheckCollisionPointRec(GetMousePosition(), weaponRec) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                // Unequip weapon into inventory
+                for (int i = 0; i < 16; i++) {
+                    if (!player.slotOccupied[i]) {
+                        player.inventory[i] = player.weaponSlot;
+                        player.slotOccupied[i] = true;
+                        player.hasWeapon = false;
+                        player.RecalculateStats();
+                        break;
+                    }
+                }
+            }
+
+            // Armor Slot
+            Rectangle armorRec = { panelRec.x + 230, panelRec.y + 190, 190, 50 };
+            DrawRectangleRec(armorRec, GetColor(0x282836FF));
+            DrawRectangleLinesEx(armorRec, 1, player.hasArmor ? player.armorSlot.color : GRAY);
+            DrawText(player.hasArmor ? player.armorSlot.name.c_str() : "Empty Armor Slot", armorRec.x + 10, armorRec.y + 16, 13, player.hasArmor ? player.armorSlot.color : GRAY);
+
+            if (player.hasArmor && CheckCollisionPointRec(GetMousePosition(), armorRec) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                // Unequip armor into inventory
+                for (int i = 0; i < 16; i++) {
+                    if (!player.slotOccupied[i]) {
+                        player.inventory[i] = player.armorSlot;
+                        player.slotOccupied[i] = true;
+                        player.hasArmor = false;
+                        player.RecalculateStats();
+                        break;
+                    }
+                }
+            }
+
+            // Inventory Grid (4x4)
+            DrawText("BAG STORAGE (16 Slots)", panelRec.x + 20, panelRec.y + 260, 16, RAYWHITE);
+            hoveredSlot = -1;
+
+            for (int i = 0; i < 16; i++) {
+                int row = i / 4;
+                int col = i % 4;
+                Rectangle slotRec = { panelRec.x + 20 + col * 100, panelRec.y + 290 + row * 80, 90, 70 };
+
+                bool isHovered = CheckCollisionPointRec(GetMousePosition(), slotRec);
+                if (isHovered) hoveredSlot = i;
+
+                DrawRectangleRec(slotRec, isHovered ? GetColor(0x353548FF) : GetColor(0x22222EFF));
+                DrawRectangleLinesEx(slotRec, 1, isHovered ? RAYWHITE : DARKGRAY);
+
+                if (player.slotOccupied[i]) {
+                    DrawRectangleLinesEx(slotRec, 2, player.inventory[i].color);
+                    DrawText(player.inventory[i].name.c_str(), slotRec.x + 5, slotRec.y + 10, 11, player.inventory[i].color);
+
+                    // Equip / Use Action on Click
+                    if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                        Item item = player.inventory[i];
+
+                        if (item.type == ITEM_WEAPON) {
+                            if (player.hasWeapon) {
+                                player.inventory[i] = player.weaponSlot; // Swap
+                            } else {
+                                player.slotOccupied[i] = false;
+                            }
+                            player.weaponSlot = item;
+                            player.hasWeapon = true;
+                        } 
+                        else if (item.type == ITEM_ARMOR) {
+                            if (player.hasArmor) {
+                                player.inventory[i] = player.armorSlot; // Swap
+                            } else {
+                                player.slotOccupied[i] = false;
+                            }
+                            player.armorSlot = item;
+                            player.hasArmor = true;
+                        } 
+                        else if (item.type == ITEM_POTION) {
+                            player.currentHealth += item.bonusHealth;
+                            player.slotOccupied[i] = false;
+                        }
+
+                        player.RecalculateStats();
+                    }
+                }
+            }
+
+            // Hover Tooltip Rendering
+            if (hoveredSlot != -1 && player.slotOccupied[hoveredSlot]) {
+                Item item = player.inventory[hoveredSlot];
+                Vector2 mouse = GetMousePosition();
+
+                Rectangle ttRec = { mouse.x - 210, mouse.y, 200, 100 };
+                DrawRectangleRec(ttRec, GetColor(0x12121AFF));
+                DrawRectangleLinesEx(ttRec, 2, item.color);
+
+                DrawText(item.name.c_str(), ttRec.x + 10, ttRec.y + 10, 13, item.color);
+                if (item.bonusAttack > 0) DrawText(TextFormat("+%d Attack", item.bonusAttack), ttRec.x + 10, ttRec.y + 35, 12, RED);
+                if (item.bonusDefense > 0) DrawText(TextFormat("+%d Defense", item.bonusDefense), ttRec.x + 10, ttRec.y + 52, 12, SKYBLUE);
+                if (item.bonusHealth > 0) DrawText(TextFormat("+%d Max HP", item.bonusHealth), ttRec.x + 10, ttRec.y + 69, 12, GREEN);
+            }
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
