@@ -1,0 +1,200 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Boss States
+enum BossState {
+    BOSS_IDLE,
+    BOSS_CHASE,
+    BOSS_TELEGRAPH,
+    BOSS_ATTACK,
+    BOSS_COOLDOWN
+};
+
+struct Boss {
+    Vector2 pos = { 800.0f, 360.0f };
+    float radius = 35.0f;
+    float maxHealth = 300.0f;
+    float currentHealth = 300.0f;
+    float baseSpeed = 120.0f;
+    
+    BossState state = BOSS_IDLE;
+    bool isEnraged = false; // Triggers at 50% HP
+
+    // Attack Timers
+    float stateTimer = 0.0f;
+    float telegraphDuration = 1.2f;
+    float cooldownDuration = 1.5f;
+
+    // Telegraph AoE Marker Properties
+    Vector2 attackTargetPos;
+    float attackRadius = 110.0f;
+    float telegraphProgress = 0.0f;
+};
+
+struct Player {
+    Vector2 pos = { 200.0f, 360.0f };
+    float health = 100.0f;
+    float maxHealth = 100.0f;
+    float speed = 260.0f;
+};
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: State-Driven Boss AI Encounter");
+    SetTargetFPS(60);
+
+    Player player;
+    Boss boss;
+
+    std::string combatLog = "Avoid the Boss's red telegraph markers before attacks land!";
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // --- 1. PLAYER CONTROLS & LOGIC ---
+        Vector2 inputDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+        if (Vector2Length(inputDir) > 0) {
+            inputDir = Vector2Normalize(inputDir);
+            player.pos = Vector2Add(player.pos, Vector2Scale(inputDir, player.speed * dt));
+        }
+
+        // Player Attack (Click LMB)
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (boss.currentHealth > 0 && Vector2Distance(player.pos, boss.pos) < 90.0f) {
+                float damage = 25.0f;
+                boss.currentHealth -= damage;
+                if (boss.currentHealth < 0) boss.currentHealth = 0;
+                combatLog = TextFormat("You hit the Void Titan for %.0f damage!", damage);
+            }
+        }
+
+        // Check Phase 2 (Enraged Transition at 50% HP)
+        if (!boss.isEnraged && boss.currentHealth <= (boss.maxHealth * 0.5f)) {
+            boss.isEnraged = true;
+            boss.telegraphDuration = 0.6f; // 50% faster attack warnings
+            boss.cooldownDuration = 0.8f;
+            boss.baseSpeed = 180.0f;       // Faster movement
+            boss.attackRadius = 140.0f;    // Expanded AoE zone
+            combatLog = "WARNING: Void Titan has entered ENRAGED MODE!";
+        }
+
+        // --- 2. BOSS AI FINITE STATE MACHINE (FSM) ---
+        if (boss.currentHealth > 0) {
+            boss.stateTimer += dt;
+
+            switch (boss.state) {
+                case BOSS_IDLE: {
+                    if (boss.stateTimer >= 0.5f) {
+                        boss.state = BOSS_CHASE;
+                        boss.stateTimer = 0.0f;
+                    }
+                } break;
+
+                case BOSS_CHASE: {
+                    Vector2 dirToPlayer = Vector2Normalize(Vector2Subtract(player.pos, boss.pos));
+                    boss.pos = Vector2Add(boss.pos, Vector2Scale(dirToPlayer, boss.baseSpeed * dt));
+
+                    // Trigger Telegraph when closing distance
+                    if (Vector2Distance(boss.pos, player.pos) < 180.0f || boss.stateTimer > 3.0f) {
+                        boss.state = BOSS_TELEGRAPH;
+                        boss.stateTimer = 0.0f;
+                        boss.attackTargetPos = player.pos; // Lock in player's current position for AoE
+                        boss.telegraphProgress = 0.0f;
+                    }
+                } break;
+
+                case BOSS_TELEGRAPH: {
+                    boss.telegraphProgress = boss.stateTimer / boss.telegraphDuration;
+
+                    if (boss.stateTimer >= boss.telegraphDuration) {
+                        boss.state = BOSS_ATTACK;
+                        boss.stateTimer = 0.0f;
+                    }
+                } break;
+
+                case BOSS_ATTACK: {
+                    // Execute AoE Attack
+                    if (Vector2Distance(player.pos, boss.attackTargetPos) <= boss.attackRadius) {
+                        float bossDmg = boss.isEnraged ? 35.0f : 20.0f;
+                        player.health -= bossDmg;
+                        if (player.health < 0) player.health = 0;
+                        combatLog = TextFormat("Void Titan landed AoE Blast! Player took %.0f damage!", bossDmg);
+                    } else {
+                        combatLog = "You dodged the Void Titan's AoE Blast!";
+                    }
+
+                    boss.state = BOSS_COOLDOWN;
+                    boss.stateTimer = 0.0f;
+                } break;
+
+                case BOSS_COOLDOWN: {
+                    if (boss.stateTimer >= boss.cooldownDuration) {
+                        boss.state = BOSS_CHASE;
+                        boss.stateTimer = 0.0f;
+                    }
+                } break;
+            }
+        }
+
+        // --- 3. RENDERING PASS ---
+        BeginDrawing();
+        ClearBackground(GetColor(0x0F0F16FF));
+
+        // Arena Boundaries
+        DrawRectangleLines(40, 40, screenWidth - 80, screenHeight - 80, GetColor(0x282838FF));
+
+        // Draw Telegraph Area Marker
+        if (boss.state == BOSS_TELEGRAPH && boss.currentHealth > 0) {
+            // Growing red danger zone
+            float currentRadius = boss.attackRadius * boss.telegraphProgress;
+            DrawCircleV(boss.attackTargetPos, currentRadius, Fade(RED, 0.35f));
+            DrawCircleLines(boss.attackTargetPos.x, boss.attackTargetPos.y, boss.attackRadius, RED);
+            DrawText("DANGER!", boss.attackTargetPos.x - 28, boss.attackTargetPos.y - 10, 14, RED);
+        }
+
+        // Draw Boss
+        if (boss.currentHealth > 0) {
+            Color bossColor = boss.isEnraged ? PURPLE : MAROON;
+            DrawCircleV(boss.pos, boss.radius, bossColor);
+            DrawCircleLines(boss.pos.x, boss.pos.y, boss.radius, boss.isEnraged ? ORANGE : RED);
+
+            // Boss Header & Health Bar
+            DrawText(boss.isEnraged ? "VOID TITAN [ENRAGED]" : "VOID TITAN", screenWidth / 2 - 80, 50, 18, boss.isEnraged ? ORANGE : RED);
+            DrawRectangle(screenWidth / 2 - 150, 75, 300, 12, DARKGRAY);
+            DrawRectangle(screenWidth / 2 - 150, 75, (boss.currentHealth / boss.maxHealth) * 300, 12, boss.isEnraged ? PURPLE : RED);
+            DrawRectangleLines(screenWidth / 2 - 150, 75, 300, 12, GRAY);
+        } else {
+            DrawText("VOID TITAN DEFEATED!", screenWidth / 2 - 120, 60, 22, GOLD);
+        }
+
+        // Draw Player
+        if (player.health > 0) {
+            DrawCircleV(player.pos, 18.0f, SKYBLUE);
+            DrawCircleLines(player.pos.x, player.pos.y, 18.0f, RAYWHITE);
+        }
+
+        // Draw Player HP Bar
+        DrawRectangle(60, screenHeight - 70, 200, 14, DARKGRAY);
+        DrawRectangle(60, screenHeight - 70, (player.health / player.maxHealth) * 200, 14, GREEN);
+        DrawText(TextFormat("Player HP: %.0f / %.0f", player.health, player.maxHealth), 60, screenHeight - 90, 14, RAYWHITE);
+
+        // Combat Log & Hints
+        DrawRectangle(300, screenHeight - 70, 920, 35, GetColor(0x181824FF));
+        DrawRectangleLines(300, screenHeight - 70, 920, 35, GOLD);
+        DrawText(combatLog.c_str(), 315, screenHeight - 60, 14, GREEN);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
