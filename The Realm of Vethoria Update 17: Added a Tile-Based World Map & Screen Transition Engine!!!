@@ -1,0 +1,216 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+
+const int MAP_COLS = 16;
+const int MAP_ROWS = 10;
+const int TILE_SIZE = 80;
+
+// Tile Types
+enum TileType {
+    TILE_FLOOR = 0,
+    TILE_WALL = 1,
+    TILE_DOOR = 2
+};
+
+// Room Structure
+struct Room {
+    int map[MAP_ROWS][MAP_COLS];
+    Color floorColor;
+    Color wallColor;
+    int targetRoomIndex;
+    Vector2 targetPlayerSpawn;
+};
+
+// Global Game Rooms
+Room rooms[2] = {
+    // ROOM 0: Sanctuary Courtyard
+    {
+        {
+            {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+            {1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1},
+            {1,0,1,1,0,0,1,0,1,1,1,0,1,1,0,1},
+            {1,0,1,0,0,0,0,0,0,0,1,0,0,1,0,1},
+            {1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1}, // Doorway at right edge
+            {1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1}, // Doorway at right edge
+            {1,0,1,0,0,0,0,0,0,0,1,0,0,1,0,1},
+            {1,0,1,1,0,0,1,0,1,1,1,0,1,1,0,1},
+            {1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1},
+            {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+        },
+        GetColor(0x1C1C26FF),
+        GetColor(0x2D2D3FFF),
+        1,                  // Leads to Room 1
+        { 120.0f, 360.0f }  // Spawn location in Room 1
+    },
+    // ROOM 1: Forgotten Dungeon
+    {
+        {
+            {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+            {1,0,0,0,1,0,0,0,0,0,0,1,0,0,0,1},
+            {1,0,1,0,1,0,1,1,1,1,0,1,0,1,0,1},
+            {1,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1},
+            {1,2,0,0,0,0,1,1,1,1,0,0,0,0,0,1}, // Doorway at left edge
+            {1,2,0,0,0,0,1,1,1,1,0,0,0,0,0,1}, // Doorway at left edge
+            {1,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1},
+            {1,0,1,0,1,0,1,1,1,1,0,1,0,1,0,1},
+            {1,0,0,0,1,0,0,0,0,0,0,1,0,0,0,1},
+            {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+        },
+        GetColor(0x162016FF),
+        GetColor(0x283B28FF),
+        0,                  // Leads back to Room 0
+        { 1160.0f, 360.0f } // Spawn location in Room 0
+    }
+};
+
+// Transition Overlay Handler
+struct FadeTransition {
+    bool active = false;
+    float alpha = 0.0f;
+    bool reachedPeak = false;
+    int nextRoom = 0;
+    Vector2 nextSpawn;
+};
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: Tile World & Camera Transitions");
+    SetTargetFPS(60);
+
+    int currentRoomIdx = 0;
+    Vector2 playerPos = { 200.0f, 360.0f };
+    float playerRadius = 18.0f;
+    float moveSpeed = 260.0f;
+
+    Camera2D camera = { 0 };
+    camera.target = playerPos;
+    camera.offset = { (float)screenWidth / 2.0f, (float)screenHeight / 2.0f };
+    camera.rotation = 0.0f;
+    camera.zoom = 1.0f;
+
+    FadeTransition fade;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // --- 1. TRANSITION STATE MACHINE ---
+        if (fade.active) {
+            if (!fade.reachedPeak) {
+                fade.alpha += 2.5f * dt; // Fade to Black
+                if (fade.alpha >= 1.0f) {
+                    fade.alpha = 1.0f;
+                    fade.reachedPeak = true;
+
+                    // Switch Room & Teleport Player at peak darkness
+                    currentRoomIdx = fade.nextRoom;
+                    playerPos = fade.nextSpawn;
+                }
+            } else {
+                fade.alpha -= 2.5f * dt; // Fade in from Black
+                if (fade.alpha <= 0.0f) {
+                    fade.alpha = 0.0f;
+                    fade.active = false;
+                    fade.reachedPeak = false;
+                }
+            }
+        }
+
+        // --- 2. CONTROLS & TILE COLLISION ---
+        if (!fade.active) {
+            Vector2 inputDir = { 0.0f, 0.0f };
+            if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+            if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+            if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+            if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+            if (Vector2Length(inputDir) > 0) {
+                inputDir = Vector2Normalize(inputDir);
+                Vector2 moveVel = Vector2Scale(inputDir, moveSpeed * dt);
+
+                // Axis-aligned bounding box tile collision checking
+                Vector2 nextX = { playerPos.x + moveVel.x, playerPos.y };
+                int tileX = (int)(nextX.x / TILE_SIZE);
+                int tileY = (int)(nextX.y / TILE_SIZE);
+
+                if (tileX >= 0 && tileX < MAP_COLS && tileY >= 0 && tileY < MAP_ROWS) {
+                    if (rooms[currentRoomIdx].map[tileY][tileX] != TILE_WALL) {
+                        playerPos.x = nextX.x;
+                    }
+                }
+
+                Vector2 nextY = { playerPos.x, playerPos.y + moveVel.y };
+                tileX = (int)(nextY.x / TILE_SIZE);
+                tileY = (int)(nextY.y / TILE_SIZE);
+
+                if (tileX >= 0 && tileX < MAP_COLS && tileY >= 0 && tileY < MAP_ROWS) {
+                    if (rooms[currentRoomIdx].map[tileY][tileX] != TILE_WALL) {
+                        playerPos.y = nextY.y;
+                    }
+                }
+
+                // Check Door Trigger Interaction
+                int currentTileX = (int)(playerPos.x / TILE_SIZE);
+                int currentTileY = (int)(playerPos.y / TILE_SIZE);
+
+                if (rooms[currentRoomIdx].map[currentTileY][currentTileX] == TILE_DOOR) {
+                    fade.active = true;
+                    fade.nextRoom = rooms[currentRoomIdx].targetRoomIndex;
+                    fade.nextSpawn = rooms[currentRoomIdx].targetPlayerSpawn;
+                }
+            }
+        }
+
+        // --- 3. CAMERA BOUNDARY LOCKING ---
+        camera.target = playerPos;
+
+        // --- 4. RENDERING PASS ---
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        BeginMode2D(camera);
+
+        // Render Tilemap
+        const Room& currentRoom = rooms[currentRoomIdx];
+        for (int r = 0; r < MAP_ROWS; r++) {
+            for (int c = 0; c < MAP_COLS; c++) {
+                Rectangle tileRec = { (float)c * TILE_SIZE, (float)r * TILE_SIZE, (float)TILE_SIZE, (float)TILE_SIZE };
+                int tileType = currentRoom.map[r][c];
+
+                if (tileType == TILE_WALL) {
+                    DrawRectangleRec(tileRec, currentRoom.wallColor);
+                    DrawRectangleLinesEx(tileRec, 1, DARKGRAY);
+                } else if (tileType == TILE_FLOOR) {
+                    DrawRectangleRec(tileRec, currentRoom.floorColor);
+                    DrawRectangleLinesEx(tileRec, 1, GetColor(0x222230FF));
+                } else if (tileType == TILE_DOOR) {
+                    DrawRectangleRec(tileRec, GREEN);
+                    DrawRectangleLinesEx(tileRec, 2, RAYWHITE);
+                }
+            }
+        }
+
+        // Render Player
+        DrawCircleV(playerPos, playerRadius, SKYBLUE);
+        DrawCircleLines(playerPos.x, playerPos.y, playerRadius, RAYWHITE);
+
+        EndMode2D();
+
+        // UI Overlay
+        DrawRectangle(20, 20, 420, 40, GetColor(0x181824FF));
+        DrawRectangleLines(20, 20, 420, 40, GOLD);
+        DrawText(TextFormat("ZONE: %s | Step on GREEN Door to transition", currentRoomIdx == 0 ? "SANCTUARY COURTYARD" : "FORGOTTEN DUNGEON"), 30, 32, 13, RAYWHITE);
+
+        // Transition Screen Fade Overlay
+        if (fade.active) {
+            DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, fade.alpha));
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
