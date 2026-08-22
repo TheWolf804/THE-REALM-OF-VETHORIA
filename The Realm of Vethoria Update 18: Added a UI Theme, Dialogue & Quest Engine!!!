@@ -1,0 +1,234 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+// Quest Status
+enum QuestState {
+    QUEST_NOT_STARTED,
+    QUEST_ACTIVE,
+    QUEST_COMPLETED
+};
+
+struct Quest {
+    std::string title;
+    std::string description;
+    int currentKills = 0;
+    int requiredKills = 3;
+    QuestState state = QUEST_NOT_STARTED;
+};
+
+// Dialogue System Data
+struct DialogueNode {
+    std::string speakerName;
+    std::string text;
+    bool grantsQuest = false;
+};
+
+struct DialogueManager {
+    std::vector<DialogueNode> nodes;
+    int currentLine = 0;
+    bool active = false;
+    
+    // Typewriter Effect Variables
+    float charTimer = 0.0f;
+    int visibleChars = 0;
+    float charSpeed = 0.03f; // Seconds per character
+};
+
+struct NPC {
+    std::string name;
+    Vector2 pos;
+    float radius = 22.0f;
+};
+
+int main() {
+    const int screenWidth = 1280;
+    const int screenHeight = 720;
+
+    InitWindow(screenWidth, screenHeight, "Vethoria: UI Theme, Dialogue & Quest Engine");
+    SetTargetFPS(60);
+
+    // Player State
+    Vector2 playerPos = { 200.0f, 360.0f };
+    float playerSpeed = 240.0f;
+
+    // NPC State
+    NPC commander = { "Commander Vane", { 400.0f, 360.0f } };
+
+    // Quest Data
+    Quest activeQuest = {
+        "Purge the Shadow Constructs",
+        "Slay the corrupted constructs haunting the outer sanctuary courtyard.",
+        0, 3, QUEST_NOT_STARTED
+    };
+
+    // Dialogue Script Setup
+    DialogueManager dialogue;
+    dialogue.nodes = {
+        { "Commander Vane", "Greetings, traveler. The sun sets quickly over Vethoria, and shadow constructs threaten our perimeter." },
+        { "Commander Vane", "I need someone of your martial skill to purge 3 constructs before nightfall.", true },
+        { "Commander Vane", "Return to me once the task is done, and you shall be rewarded handsomely." }
+    };
+
+    // Target Enemies for Quest Testing
+    struct DummyEnemy { Vector2 pos; bool alive = true; };
+    std::vector<DummyEnemy> enemies = {
+        { { 800.0f, 200.0f }, true },
+        { { 950.0f, 360.0f }, true },
+        { { 800.0f, 520.0f }, true }
+    };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // --- 1. CONTROLS & LOGIC ---
+        if (!dialogue.active) {
+            Vector2 inputDir = { 0.0f, 0.0f };
+            if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+            if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+            if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+            if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+            if (Vector2Length(inputDir) > 0) {
+                inputDir = Vector2Normalize(inputDir);
+                playerPos = Vector2Add(playerPos, Vector2Scale(inputDir, playerSpeed * dt));
+            }
+
+            // Interact with NPC (Press E)
+            if (IsKeyPressed(KEY_E) && Vector2Distance(playerPos, commander.pos) < 70.0f) {
+                dialogue.active = true;
+                dialogue.currentLine = 0;
+                dialogue.visibleChars = 0;
+                dialogue.charTimer = 0.0f;
+            }
+
+            // Combat Attack for Quest Progress (Click Enemies)
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && activeQuest.state == QUEST_ACTIVE) {
+                Vector2 mousePos = GetMousePosition();
+                for (auto& enemy : enemies) {
+                    if (enemy.alive && Vector2Distance(mousePos, enemy.pos) < 30.0f) {
+                        enemy.alive = false;
+                        activeQuest.currentKills++;
+                        if (activeQuest.currentKills >= activeQuest.requiredKills) {
+                            activeQuest.state = QUEST_COMPLETED;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Dialogue Controls
+            DialogueNode& current = dialogue.nodes[dialogue.currentLine];
+
+            // Typewriter character increment
+            if (dialogue.visibleChars < (int)current.text.length()) {
+                dialogue.charTimer += dt;
+                if (dialogue.charTimer >= dialogue.charSpeed) {
+                    dialogue.charTimer = 0.0f;
+                    dialogue.visibleChars++;
+                }
+            }
+
+            // Advance Dialogue on [SPACE] or [E]
+            if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) {
+                // If text hasn't finished typing, instantly reveal full line
+                if (dialogue.visibleChars < (int)current.text.length()) {
+                    dialogue.visibleChars = (int)current.text.length();
+                } else {
+                    // Check Quest Grant Trigger
+                    if (current.grantsQuest && activeQuest.state == QUEST_NOT_STARTED) {
+                        activeQuest.state = QUEST_ACTIVE;
+                    }
+
+                    dialogue.currentLine++;
+                    dialogue.visibleChars = 0;
+                    dialogue.charTimer = 0.0f;
+
+                    if (dialogue.currentLine >= (int)dialogue.nodes.size()) {
+                        dialogue.active = false; // Dialogue End
+                    }
+                }
+            }
+        }
+
+        // --- 2. RENDERING PASS ---
+        BeginDrawing();
+        ClearBackground(GetColor(0x0F0F16FF));
+
+        // Draw NPC
+        DrawCircleV(commander.pos, commander.radius, GOLD);
+        DrawCircleLines(commander.pos.x, commander.pos.y, commander.radius, RAYWHITE);
+        DrawText(commander.name.c_str(), commander.pos.x - 45, commander.pos.y - 40, 14, GOLD);
+
+        // Interaction Prompt Indicator
+        if (!dialogue.active && Vector2Distance(playerPos, commander.pos) < 70.0f) {
+            DrawRectangle(commander.pos.x - 40, commander.pos.y - 65, 80, 20, GetColor(0x181824FF));
+            DrawRectangleLines(commander.pos.x - 40, commander.pos.y - 65, 80, 20, GOLD);
+            DrawText("[E] TALK", commander.pos.x - 28, commander.pos.y - 62, 12, RAYWHITE);
+        }
+
+        // Draw Quest Enemies
+        for (const auto& enemy : enemies) {
+            if (enemy.alive) {
+                DrawCircleV(enemy.pos, 20.0f, RED);
+                DrawCircleLines(enemy.pos.x, enemy.pos.y, 20.0f, RAYWHITE);
+                DrawText("Shadow Construct", enemy.pos.x - 45, enemy.pos.y - 35, 11, RED);
+            }
+        }
+
+        // Draw Player
+        DrawCircleV(playerPos, 18.0f, SKYBLUE);
+        DrawCircleLines(playerPos.x, playerPos.y, 18.0f, RAYWHITE);
+
+        // --- QUEST TRACKER HUD ---
+        Rectangle questHudRec = { 20, 20, 320, 140 };
+        DrawRectangleRec(questHudRec, GetColor(0x14141EFF));
+        DrawRectangleLinesEx(questHudRec, 1, GOLD);
+
+        DrawText("QUEST TRACKER", questHudRec.x + 15, questHudRec.y + 12, 14, GOLD);
+        DrawLine(questHudRec.x + 15, questHudRec.y + 30, questHudRec.x + 305, questHudRec.y + 30, DARKGRAY);
+
+        if (activeQuest.state == QUEST_NOT_STARTED) {
+            DrawText("No Active Quests.", questHudRec.x + 15, questHudRec.y + 45, 13, GRAY);
+            DrawText("Talk to Commander Vane to receive a task.", questHudRec.x + 15, questHudRec.y + 70, 11, LIGHTGRAY);
+        } else {
+            DrawText(activeQuest.title.c_str(), questHudRec.x + 15, questHudRec.y + 40, 13, RAYWHITE);
+            
+            // Objective Progress
+            Color statusColor = (activeQuest.state == QUEST_COMPLETED) ? GREEN : ORANGE;
+            std::string objText = TextFormat("Constructs Slain: %d / %d", activeQuest.currentKills, activeQuest.requiredKills);
+            DrawText(objText.c_str(), questHudRec.x + 15, questHudRec.y + 65, 12, statusColor);
+
+            if (activeQuest.state == QUEST_COMPLETED) {
+                DrawText("STATUS: OBJECTIVE COMPLETE!", questHudRec.x + 15, questHudRec.y + 95, 12, GREEN);
+            } else {
+                DrawText("Click red constructs to defeat them.", questHudRec.x + 15, questHudRec.y + 95, 11, GRAY);
+            }
+        }
+
+        // --- TYPEWRITER DIALOGUE MODAL ---
+        if (dialogue.active) {
+            Rectangle diagBox = { 180, screenHeight - 190, 920, 150 };
+            DrawRectangleRec(diagBox, GetColor(0x161622F4));
+            DrawRectangleLinesEx(diagBox, 2, GOLD);
+
+            // Speaker Title Badge
+            DialogueNode& current = dialogue.nodes[dialogue.currentLine];
+            DrawRectangle(diagBox.x + 20, diagBox.y - 15, MeasureText(current.speakerName.c_str(), 14) + 20, 30, GetColor(0x222232FF));
+            DrawRectangleLines(diagBox.x + 20, diagBox.y - 15, MeasureText(current.speakerName.c_str(), 14) + 20, 30, GOLD);
+            DrawText(current.speakerName.c_str(), diagBox.x + 30, diagBox.y - 8, 14, GOLD);
+
+            // Animated Visible Text Chunk
+            std::string visibleSubstring = current.text.substr(0, dialogue.visibleChars);
+            DrawText(visibleSubstring.c_str(), diagBox.x + 30, diagBox.y + 35, 16, RAYWHITE);
+
+            // Continue Hint Prompt
+            DrawText("[SPACE] Continue...", diagBox.x + diagBox.width - 150, diagBox.y + diagBox.height - 30, 12, GOLD);
+        }
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
