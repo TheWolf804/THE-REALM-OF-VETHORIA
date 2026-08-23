@@ -1,0 +1,489 @@
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <cmath>
+
+// =======================================================================================
+// 1. GAME STATES & ENUMS
+// =======================================================================================
+enum GameState { STATE_MENU, STATE_SETTINGS, STATE_GAMEPLAY };
+enum UpscaleMode { UPSCALE_OFF, UPSCALE_MATCH, UPSCALE_OVERLEVEL };
+enum Rarity { RARITY_COMMON, RARITY_UNCOMMON, RARITY_RARE, RARITY_EPIC, RARITY_LEGENDARY };
+enum ItemType { ITEM_WEAPON, ITEM_ARMOR, ITEM_POTION };
+enum BossState { BOSS_IDLE, BOSS_CHASE, BOSS_TELEGRAPH, BOSS_ATTACK, BOSS_COOLDOWN };
+enum TileType { TILE_FLOOR = 0, TILE_WALL = 1, TILE_DOOR = 2 };
+
+// =======================================================================================
+// 2. PARTICLE SYSTEM ENGINE
+// =======================================================================================
+struct Particle {
+    Vector2 pos, vel;
+    Color col;
+    float size, alpha, maxLife, currentLife;
+    bool active = false;
+};
+
+class ParticleEngine {
+    static const int MAX_P = 200;
+    Particle particles[MAX_P];
+public:
+    ParticleEngine() { for (int i = 0; i < MAX_P; i++) particles[i].active = false; }
+
+    void Emit(Vector2 pos, Color col, int count, float minSpeed, float maxSpeed) {
+        int spawned = 0;
+        for (int i = 0; i < MAX_P && spawned < count; i++) {
+            if (!particles[i].active) {
+                particles[i].active = true;
+                particles[i].pos = pos;
+                float angle = (float)GetRandomValue(0, 360) * DEG2RAD;
+                float speed = (float)GetRandomValue((int)minSpeed, (int)maxSpeed);
+                particles[i].vel = { cosf(angle) * speed, sinf(angle) * speed };
+                particles[i].col = col;
+                particles[i].size = (float)GetRandomValue(3, 6);
+                particles[i].maxLife = (float)GetRandomValue(15, 40) / 100.0f;
+                particles[i].currentLife = particles[i].maxLife;
+                particles[i].alpha = 1.0f;
+                spawned++;
+            }
+        }
+    }
+
+    void Update(float dt) {
+        for (int i = 0; i < MAX_P; i++) {
+            if (particles[i].active) {
+                particles[i].currentLife -= dt;
+                if (particles[i].currentLife <= 0.0f) { particles[i].active = false; continue; }
+                particles[i].pos = Vector2Add(particles[i].pos, Vector2Scale(particles[i].vel, dt));
+                particles[i].vel = Vector2Scale(particles[i].vel, 0.92f);
+                particles[i].alpha = particles[i].currentLife / particles[i].maxLife;
+            }
+        }
+    }
+
+    void Draw() {
+        for (int i = 0; i < MAX_P; i++) {
+            if (particles[i].active) {
+                Color c = particles[i].col;
+                c.a = (unsigned char)(particles[i].alpha * 255);
+                DrawCircleV(particles[i].pos, particles[i].size * particles[i].alpha, c);
+            }
+        }
+    }
+};
+
+// =======================================================================================
+// 3. ITEMS & INVENTORY ENGINE
+// =======================================================================================
+struct Item {
+    std::string name;
+    ItemType type;
+    Rarity rarity;
+    int bonusAttack, bonusDefense, bonusHealth;
+    Color color;
+};
+
+Color GetRarityColor(Rarity r) {
+    if (r == RARITY_LEGENDARY) return GOLD;
+    if (r == RARITY_EPIC) return PURPLE;
+    if (r == RARITY_RARE) return SKYBLUE;
+    if (r == RARITY_UNCOMMON) return GREEN;
+    return LIGHTGRAY;
+}
+
+Item GenerateRandomLoot() {
+    int roll = GetRandomValue(1, 100);
+    Rarity rarity = RARITY_COMMON;
+    if (roll > 94) rarity = RARITY_LEGENDARY;
+    else if (roll > 78) rarity = RARITY_EPIC;
+    else if (roll > 55) rarity = RARITY_RARE;
+    else if (roll > 30) rarity = RARITY_UNCOMMON;
+
+    int typeRoll = GetRandomValue(0, 2);
+    Item item; item.rarity = rarity; item.color = GetRarityColor(rarity);
+    int scale = (int)rarity + 1;
+
+    if (typeRoll == 0) {
+        item.type = ITEM_WEAPON; item.bonusAttack = scale * GetRandomValue(6, 12); item.bonusDefense = 0; item.bonusHealth = 0;
+        const char* names[] = { "Blade", "Warhammer", "Greatsword", "Staff" };
+        item.name = TextFormat("Tier-%d %s", scale, names[GetRandomValue(0, 3)]);
+    } else if (typeRoll == 1) {
+        item.type = ITEM_ARMOR; item.bonusAttack = 0; item.bonusDefense = scale * GetRandomValue(4, 7); item.bonusHealth = scale * 20;
+        const char* names[] = { "Vest", "Cuirass", "Plate", "Aegis" };
+        item.name = TextFormat("Tier-%d %s", scale, names[GetRandomValue(0, 3)]);
+    } else {
+        item.type = ITEM_POTION; item.bonusAttack = 0; item.bonusDefense = 0; item.bonusHealth = scale * 30;
+        item.name = "Health Elixir"; item.color = RED;
+    }
+    return item;
+}
+
+// =======================================================================================
+// 4. PLAYER ARCHETYPE & STAT RECALCULATION
+// =======================================================================================
+struct PlayerState {
+    Vector2 pos = { 200.0f, 360.0f };
+    int level = 8;
+    float health = 150.0f;
+    int baseAttack = 20, baseDefense = 5, baseMaxHealth = 150;
+    int totalAttack = 20, totalDefense = 5, totalMaxHealth = 150;
+
+    Item weaponSlot; bool hasWeapon = false;
+    Item armorSlot;  bool hasArmor = false;
+    Item inventory[16]; bool slotOccupied[16] = { false };
+
+    void RecalculateStats() {
+        totalAttack = baseAttack + (hasWeapon ? weaponSlot.bonusAttack : 0);
+        totalDefense = baseDefense + (hasArmor ? armorSlot.bonusDefense : 0);
+        totalMaxHealth = baseMaxHealth + (hasArmor ? armorSlot.bonusHealth : 0);
+        if (health > totalMaxHealth) health = (float)totalMaxHealth;
+    }
+};
+
+// =======================================================================================
+// 5. MAP & TRANSITION ENGINE
+// =======================================================================================
+const int MAP_COLS = 16, MAP_ROWS = 10, TILE_SIZE = 80;
+
+struct Room {
+    int map[MAP_ROWS][MAP_COLS];
+    Color floorCol, wallCol;
+    int targetRoom; Vector2 targetSpawn;
+};
+
+Room worldRooms[2] = {
+    { // Sanctuary Courtyard
+        {
+            {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+            {1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1},
+            {1,0,1,1,0,0,1,0,1,1,1,0,1,1,0,1},
+            {1,0,1,0,0,0,0,0,0,0,1,0,0,1,0,1},
+            {1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1},
+            {1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1},
+            {1,0,1,0,0,0,0,0,0,0,1,0,0,1,0,1},
+            {1,0,1,1,0,0,1,0,1,1,1,0,1,1,0,1},
+            {1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1},
+            {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+        }, GetColor(0x1A1A24FF), GetColor(0x2A2A3CFF), 1, { 120.0f, 360.0f }
+    },
+    { // Forgotten Dungeon
+        {
+            {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+            {1,0,0,0,1,0,0,0,0,0,0,1,0,0,0,1},
+            {1,0,1,0,1,0,1,1,1,1,0,1,0,1,0,1},
+            {1,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1},
+            {1,2,0,0,0,0,1,1,1,1,0,0,0,0,0,1},
+            {1,2,0,0,0,0,1,1,1,1,0,0,0,0,0,1},
+            {1,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1},
+            {1,0,1,0,1,0,1,1,1,1,0,1,0,1,0,1},
+            {1,0,0,0,1,0,0,0,0,0,0,1,0,0,0,1},
+            {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+        }, GetColor(0x141C14FF), GetColor(0x243424FF), 0, { 1160.0f, 360.0f }
+    }
+};
+
+struct FadeEngine {
+    bool active = false, reachedPeak = false;
+    float alpha = 0.0f;
+    int nextRoom; Vector2 nextSpawn;
+};
+
+// =======================================================================================
+// 6. MAIN ENGINE LOOP
+// =======================================================================================
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Master Action RPG Prototype");
+    SetTargetFPS(60);
+
+    GameState state = STATE_MENU;
+    UpscaleMode upscaleMode = UPSCALE_MATCH;
+    PlayerState player;
+    ParticleEngine particles;
+    FadeEngine fade;
+
+    int currentRoom = 0;
+    bool showInventory = false;
+
+    // Boss Entity (In Room 1)
+    BossState bossState = BOSS_IDLE;
+    Vector2 bossPos = { 850.0f, 360.0f }, attackTarget = { 0, 0 };
+    float bossMaxHP = 350.0f, bossHP = 350.0f, bossDmg = 25.0f, bossTimer = 0.0f, telegraphProgress = 0.0f;
+    bool bossEnraged = false;
+
+    // Quest & Dialogue State
+    bool questActive = false, questDone = false;
+    int questSlays = 0;
+    bool dialogueActive = false;
+    int dialogueLine = 0, visibleChars = 0;
+    float charTimer = 0.0f;
+
+    std::string dialogueLines[3] = {
+        "Commander Vane: Shadow constructs haunt the dungeon to the east!",
+        "Commander Vane: Slay the Void Titan in the east chamber to secure Vethoria.",
+        "Commander Vane: May the light protect you in the dark."
+    };
+
+    // Give Starter Item
+    player.inventory[0] = { "Initiate Sword", ITEM_WEAPON, RARITY_COMMON, 8, 0, 0, LIGHTGRAY };
+    player.slotOccupied[0] = true;
+    player.RecalculateStats();
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        particles.Update(dt);
+
+        // ===============================================================================
+        // A. MENU & SETTINGS STATES
+        // ===============================================================================
+        if (state == STATE_MENU) {
+            BeginDrawing();
+            ClearBackground(GetColor(0x101018FF));
+            DrawText("VETHORIA", screenW/2 - MeasureText("VETHORIA", 60)/2, 160, 60, GOLD);
+            DrawText("MASTER RPG PROTOTYPE", screenW/2 - MeasureText("MASTER RPG PROTOTYPE", 20)/2, 230, 20, LIGHTGRAY);
+
+            Rectangle playBtn = { (float)screenW/2 - 140, 330, 280, 50 };
+            Rectangle setBtn  = { (float)screenW/2 - 140, 400, 280, 50 };
+
+            if (CheckCollisionPointRec(GetMousePosition(), playBtn)) {
+                DrawRectangleRec(playBtn, MAROON);
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state = STATE_GAMEPLAY;
+            } else DrawRectangleRec(playBtn, DARKGRAY);
+            DrawText("ENTER WORLD", playBtn.x + 80, playBtn.y + 15, 18, RAYWHITE);
+
+            if (CheckCollisionPointRec(GetMousePosition(), setBtn)) {
+                DrawRectangleRec(setBtn, MAROON);
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state = STATE_SETTINGS;
+            } else DrawRectangleRec(setBtn, DARKGRAY);
+            DrawText("SETTINGS & UPSCALING", setBtn.x + 35, setBtn.y + 15, 18, RAYWHITE);
+
+            EndDrawing();
+            continue;
+        }
+
+        if (state == STATE_SETTINGS) {
+            BeginDrawing();
+            ClearBackground(GetColor(0x101018FF));
+            DrawText("DIFFICULTY & ENEMY UPSCALING", 80, 60, 28, GOLD);
+
+            Rectangle b1 = { 80, 160, 200, 45 }, b2 = { 300, 160, 260, 45 }, b3 = { 580, 160, 260, 45 };
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 m = GetMousePosition();
+                if (CheckCollisionPointRec(m, b1)) upscaleMode = UPSCALE_OFF;
+                if (CheckCollisionPointRec(m, b2)) upscaleMode = UPSCALE_MATCH;
+                if (CheckCollisionPointRec(m, b3)) upscaleMode = UPSCALE_OVERLEVEL;
+            }
+
+            DrawRectangleRec(b1, upscaleMode == UPSCALE_OFF ? MAROON : DARKGRAY); DrawText("OFF", b1.x + 85, b1.y + 12, 16, RAYWHITE);
+            DrawRectangleRec(b2, upscaleMode == UPSCALE_MATCH ? MAROON : DARKGRAY); DrawText("MATCH PLAYER", b2.x + 65, b2.y + 12, 16, RAYWHITE);
+            DrawRectangleRec(b3, upscaleMode == UPSCALE_OVERLEVEL ? MAROON : DARKGRAY); DrawText("OVERLEVEL (+3)", b3.x + 55, b3.y + 12, 16, RAYWHITE);
+
+            Rectangle back = { 80, 580, 180, 45 };
+            if (CheckCollisionPointRec(GetMousePosition(), back)) {
+                DrawRectangleRec(back, MAROON);
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state = STATE_MENU;
+            } else DrawRectangleRec(back, DARKGRAY);
+            DrawText("BACK TO MENU", back.x + 25, back.y + 12, 16, RAYWHITE);
+
+            EndDrawing();
+            continue;
+        }
+
+        // ===============================================================================
+        // B. GAMEPLAY CONTROLS & LOGIC
+        // ===============================================================================
+        // Toggle Inventory
+        if (IsKeyPressed(KEY_E) && !dialogueActive) showInventory = !showInventory;
+
+        // Generate Loot Hotkey
+        if (IsKeyPressed(KEY_SPACE) && !dialogueActive) {
+            Item loot = GenerateRandomLoot();
+            for (int i = 0; i < 16; i++) {
+                if (!player.slotOccupied[i]) { player.inventory[i] = loot; player.slotOccupied[i] = true; break; }
+            }
+        }
+
+        // Room Transition Processing
+        if (fade.active) {
+            if (!fade.reachedPeak) {
+                fade.alpha += 2.5f * dt;
+                if (fade.alpha >= 1.0f) {
+                    fade.alpha = 1.0f; fade.reachedPeak = true;
+                    currentRoom = fade.nextRoom; player.pos = fade.nextSpawn;
+                }
+            } else {
+                fade.alpha -= 2.5f * dt;
+                if (fade.alpha <= 0.0f) { fade.alpha = 0.0f; fade.active = false; fade.reachedPeak = false; }
+            }
+        }
+
+        // Player Movement & Tile Collision
+        if (!fade.active && !dialogueActive) {
+            Vector2 inputDir = { 0.0f, 0.0f };
+            if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+            if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+            if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+            if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+            if (Vector2Length(inputDir) > 0) {
+                inputDir = Vector2Normalize(inputDir);
+                Vector2 moveVel = Vector2Scale(inputDir, 250.0f * dt);
+
+                Vector2 nextX = { player.pos.x + moveVel.x, player.pos.y };
+                if (worldRooms[currentRoom].map[(int)(nextX.y/TILE_SIZE)][(int)(nextX.x/TILE_SIZE)] != TILE_WALL) player.pos.x = nextX.x;
+
+                Vector2 nextY = { player.pos.x, player.pos.y + moveVel.y };
+                if (worldRooms[currentRoom].map[(int)(nextY.y/TILE_SIZE)][(int)(nextY.x/TILE_SIZE)] != TILE_WALL) player.pos.y = nextY.y;
+
+                if (worldRooms[currentRoom].map[(int)(player.pos.y/TILE_SIZE)][(int)(player.pos.x/TILE_SIZE)] == TILE_DOOR) {
+                    fade.active = true; fade.nextRoom = worldRooms[currentRoom].targetRoom; fade.nextSpawn = worldRooms[currentRoom].targetSpawn;
+                }
+            }
+
+            // NPC Dialogue Interaction Trigger
+            if (currentRoom == 0 && IsKeyPressed(KEY_F) && Vector2Distance(player.pos, { 400.0f, 360.0f }) < 70.0f) {
+                dialogueActive = true; dialogueLine = 0; visibleChars = 0; charTimer = 0.0f;
+            }
+
+            // Player Combat Attack
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && currentRoom == 1 && bossHP > 0) {
+                if (Vector2Distance(player.pos, bossPos) < 110.0f) {
+                    bossHP -= player.totalAttack;
+                    particles.Emit(bossPos, GOLD, 15, 120.0f, 300.0f);
+                    if (bossHP <= 0) { bossHP = 0; questDone = true; }
+                }
+            }
+        }
+
+        // Dialogue Typewriter Advance
+        if (dialogueActive) {
+            charTimer += dt;
+            if (charTimer >= 0.03f) { charTimer = 0.0f; visibleChars++; }
+            if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_F)) {
+                if (visibleChars < (int)dialogueLines[dialogueLine].length()) visibleChars = (int)dialogueLines[dialogueLine].length();
+                else {
+                    dialogueLine++; visibleChars = 0;
+                    if (dialogueLine == 1) questActive = true;
+                    if (dialogueLine >= 3) dialogueActive = false;
+                }
+            }
+        }
+
+        // Boss FSM Behavior (Room 1)
+        if (currentRoom == 1 && bossHP > 0) {
+            bossTimer += dt;
+            if (!bossEnraged && bossHP <= (bossMaxHP * 0.5f)) { bossEnraged = true; bossDmg = 40.0f; }
+
+            switch (bossState) {
+                case BOSS_IDLE: if (bossTimer >= 0.5f) { bossState = BOSS_CHASE; bossTimer = 0.0f; } break;
+                case BOSS_CHASE: {
+                    Vector2 dir = Vector2Normalize(Vector2Subtract(player.pos, bossPos));
+                    bossPos = Vector2Add(bossPos, Vector2Scale(dir, (bossEnraged ? 170.0f : 110.0f) * dt));
+                    if (Vector2Distance(bossPos, player.pos) < 160.0f || bossTimer > 3.0f) {
+                        bossState = BOSS_TELEGRAPH; bossTimer = 0.0f; attackTarget = player.pos;
+                    }
+                } break;
+                case BOSS_TELEGRAPH: {
+                    telegraphProgress = bossTimer / (bossEnraged ? 0.6f : 1.2f);
+                    if (bossTimer >= (bossEnraged ? 0.6f : 1.2f)) { bossState = BOSS_ATTACK; bossTimer = 0.0f; }
+                } break;
+                case BOSS_ATTACK: {
+                    particles.Emit(attackTarget, RED, 30, 150.0f, 400.0f);
+                    if (Vector2Distance(player.pos, attackTarget) <= 120.0f) {
+                        float finalDmg = math.max(5.0f, bossDmg - player.totalDefense);
+                        player.health -= finalDmg;
+                    }
+                    bossState = BOSS_COOLDOWN; bossTimer = 0.0f;
+                } break;
+                case BOSS_COOLDOWN: if (bossTimer >= 1.0f) { bossState = BOSS_CHASE; bossTimer = 0.0f; } break;
+            }
+        }
+
+        // ===============================================================================
+        // C. RENDERING PASS
+        // ===============================================================================
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        // Render Tilemap
+        const Room& rm = worldRooms[currentRoom];
+        for (int r = 0; r < MAP_ROWS; r++) {
+            for (int c = 0; c < MAP_COLS; c++) {
+                Rectangle tileRec = { (float)c * TILE_SIZE, (float)r * TILE_SIZE, (float)TILE_SIZE, (float)TILE_SIZE };
+                if (rm.map[r][c] == TILE_WALL) DrawRectangleRec(tileRec, rm.wallCol);
+                else if (rm.map[r][c] == TILE_FLOOR) DrawRectangleRec(tileRec, rm.floorCol);
+                else if (rm.map[r][c] == TILE_DOOR) DrawRectangleRec(tileRec, GREEN);
+                DrawRectangleLinesEx(tileRec, 1, GetColor(0x181824FF));
+            }
+        }
+
+        // Render NPC (Room 0)
+        if (currentRoom == 0) {
+            DrawCircleV({ 400.0f, 360.0f }, 22.0f, GOLD);
+            DrawText("Commander Vane", 345, 320, 13, GOLD);
+            if (Vector2Distance(player.pos, { 400.0f, 360.0f }) < 70.0f) DrawText("[F] TALK", 375, 295, 12, RAYWHITE);
+        }
+
+        // Render Boss & Telegraph (Room 1)
+        if (currentRoom == 1 && bossHP > 0) {
+            if (bossState == BOSS_TELEGRAPH) {
+                DrawCircleV(attackTarget, 120.0f * telegraphProgress, Fade(RED, 0.35f));
+                DrawCircleLines(attackTarget.x, attackTarget.y, 120.0f, RED);
+            }
+            DrawCircleV(bossPos, 35.0f, bossEnraged ? PURPLE : MAROON);
+            DrawText(bossEnraged ? "VOID TITAN [ENRAGED]" : "VOID TITAN", bossPos.x - 55, bossPos.y - 55, 12, RED);
+            DrawRectangle(bossPos.x - 40, bossPos.y + 42, 80, 6, RED);
+            DrawRectangle(bossPos.x - 40, bossPos.y + 42, (bossHP / bossMaxHP) * 80, 6, GREEN);
+        }
+
+        // Render Player & Particles
+        DrawCircleV(player.pos, 18.0f, SKYBLUE);
+        particles.Draw();
+
+        // Quest HUD Box
+        DrawRectangle(20, 20, 280, 90, GetColor(0x14141EFF));
+        DrawRectangleLines(20, 20, 280, 90, GOLD);
+        DrawText("QUEST TRACKER", 30, 30, 13, GOLD);
+        if (questDone) DrawText("Objective: Void Titan Slain!", 30, 55, 12, GREEN);
+        else if (questActive) DrawText("Objective: Defeat Void Titan", 30, 55, 12, ORANGE);
+        else DrawText("Talk to Commander Vane [F]", 30, 55, 12, GRAY);
+
+        // Global Key Controls Footer Bar
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [LMB] Melee Strike | [E] Open Inventory | [SPACE] Drop Loot | [F] Interact", 20, screenH - 22, 13, LIGHTGRAY);
+
+        // Inventory UI Overlay
+        if (showInventory) {
+            Rectangle pRec = { 820, 40, 420, 620 };
+            DrawRectangleRec(pRec, GetColor(0x161622F4)); DrawRectangleLinesEx(pRec, 2, GOLD);
+            DrawText("INVENTORY & GEAR", pRec.x + 20, pRec.y + 20, 20, GOLD);
+            DrawText(TextFormat("Atk: %d  |  Def: %d  |  HP: %.0f/%d", player.totalAttack, player.totalDefense, player.health, player.totalMaxHealth), pRec.x + 20, pRec.y + 55, 14, RAYWHITE);
+
+            // Grid Slots (4x4)
+            for (int i = 0; i < 16; i++) {
+                Rectangle sRec = { pRec.x + 20 + (i % 4) * 95, pRec.y + 90 + (i / 4) * 80, 85, 70 };
+                DrawRectangleRec(sRec, GetColor(0x222230FF)); DrawRectangleLines(sRec.x, sRec.y, sRec.width, sRec.height, DARKGRAY);
+                if (player.slotOccupied[i]) {
+                    DrawRectangleLinesEx(sRec, 2, player.inventory[i].color);
+                    DrawText(player.inventory[i].name.c_str(), sRec.x + 5, sRec.y + 10, 10, player.inventory[i].color);
+                }
+            }
+        }
+
+        // Typewriter Dialogue Modal Overlay
+        if (dialogueActive) {
+            Rectangle dRec = { 180, screenH - 180, 920, 130 };
+            DrawRectangleRec(dRec, GetColor(0x181826F4)); DrawRectangleLinesEx(dRec, 2, GOLD);
+            DrawText(dialogueLines[dialogueLine].substr(0, visibleChars).c_str(), dRec.x + 30, dRec.y + 40, 16, RAYWHITE);
+            DrawText("[SPACE] Continue...", dRec.x + dRec.width - 150, dRec.y + dRec.height - 30, 12, GOLD);
+        }
+
+        // Zone Fade Overlay
+        if (fade.active) DrawRectangle(0, 0, screenW, screenH, Fade(BLACK, fade.alpha));
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
