@@ -1,0 +1,346 @@
+cmake_minimum_required(VERSION 3.16)
+project(VethoriaGame CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include_directories(include)
+
+file(GLOB_RECURSE SOURCES "src/*.cpp")
+
+add_executable(${PROJECT_NAME} ${SOURCES})
+
+# Raylib Dependency Linkage
+find_package(raylib 4.0 REQUIRED)
+target_link_libraries(${PROJECT_NAME} PRIVATE raylib)
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+
+enum GameState { STATE_MENU, STATE_SETTINGS, STATE_GAMEPLAY };
+enum Rarity { RARITY_COMMON, RARITY_UNCOMMON, RARITY_RARE, RARITY_EPIC, RARITY_LEGENDARY };
+enum ItemType { ITEM_WEAPON, ITEM_ARMOR, ITEM_POTION };
+
+struct Item {
+    std::string name;
+    ItemType type;
+    Rarity rarity;
+    int bonusAttack;
+    int bonusDefense;
+    int bonusHealth;
+    Color color;
+};
+#pragma once
+#include "Common.h"
+
+struct Particle {
+    Vector2 pos, vel;
+    Color col;
+    float size, alpha, maxLife, currentLife;
+    bool active = false;
+};
+
+class ParticleEngine {
+private:
+    static const int MAX_P = 200;
+    Particle particles[MAX_P];
+public:
+    ParticleEngine();
+    void Emit(Vector2 pos, Color col, int count, float minSpeed, float maxSpeed);
+    void Update(float dt);
+    void Draw();
+};
+#include "ParticleEngine.h"
+#include <cmath>
+
+ParticleEngine::ParticleEngine() {
+    for (int i = 0; i < MAX_P; i++) particles[i].active = false;
+}
+
+void ParticleEngine::Emit(Vector2 pos, Color col, int count, float minSpeed, float maxSpeed) {
+    int spawned = 0;
+    for (int i = 0; i < MAX_P && spawned < count; i++) {
+        if (!particles[i].active) {
+            particles[i].active = true;
+            particles[i].pos = pos;
+            float angle = (float)GetRandomValue(0, 360) * DEG2RAD;
+            float speed = (float)GetRandomValue((int)minSpeed, (int)maxSpeed);
+            particles[i].vel = { cosf(angle) * speed, sinf(angle) * speed };
+            particles[i].col = col;
+            particles[i].size = (float)GetRandomValue(3, 6);
+            particles[i].maxLife = (float)GetRandomValue(15, 40) / 100.0f;
+            particles[i].currentLife = particles[i].maxLife;
+            particles[i].alpha = 1.0f;
+            spawned++;
+        }
+    }
+}
+
+void ParticleEngine::Update(float dt) {
+    for (int i = 0; i < MAX_P; i++) {
+        if (particles[i].active) {
+            particles[i].currentLife -= dt;
+            if (particles[i].currentLife <= 0.0f) { particles[i].active = false; continue; }
+            particles[i].pos = Vector2Add(particles[i].pos, Vector2Scale(particles[i].vel, dt));
+            particles[i].vel = Vector2Scale(particles[i].vel, 0.92f);
+            particles[i].alpha = particles[i].currentLife / particles[i].maxLife;
+        }
+    }
+}
+
+void ParticleEngine::Draw() {
+    for (int i = 0; i < MAX_P; i++) {
+        if (particles[i].active) {
+            Color c = particles[i].col;
+            c.a = (unsigned char)(particles[i].alpha * 255);
+            DrawCircleV(particles[i].pos, particles[i].size * particles[i].alpha, c);
+        }
+    }
+}
+#pragma once
+#include "Common.h"
+
+class Player {
+public:
+    Vector2 pos = { 200.0f, 360.0f };
+    float health = 150.0f;
+    int totalAttack = 20, totalDefense = 5, totalMaxHealth = 150;
+
+    Item inventory[16];
+    bool slotOccupied[16] = { false };
+    bool showInventory = false;
+
+    Player();
+    void RecalculateStats();
+    void Update(float dt, bool blockInput);
+    void Draw();
+    void DrawInventoryUI();
+};
+#include "Player.h"
+
+Color GetRarityColor(Rarity r) {
+    if (r == RARITY_LEGENDARY) return GOLD;
+    if (r == RARITY_EPIC) return PURPLE;
+    if (r == RARITY_RARE) return SKYBLUE;
+    if (r == RARITY_UNCOMMON) return GREEN;
+    return LIGHTGRAY;
+}
+
+Player::Player() {
+    inventory[0] = { "Initiate Sword", ITEM_WEAPON, RARITY_COMMON, 8, 0, 0, LIGHTGRAY };
+    slotOccupied[0] = true;
+    RecalculateStats();
+}
+
+void Player::RecalculateStats() {
+    totalAttack = 20 + (slotOccupied[0] ? inventory[0].bonusAttack : 0);
+    totalDefense = 5;
+    totalMaxHealth = 150;
+    if (health > totalMaxHealth) health = (float)totalMaxHealth;
+}
+
+void Player::Update(float dt, bool blockInput) {
+    if (blockInput) return;
+    
+    if (IsKeyPressed(KEY_E)) showInventory = !showInventory;
+
+    Vector2 inputDir = { 0.0f, 0.0f };
+    if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+    if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+    if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+    if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+    if (Vector2Length(inputDir) > 0) {
+        inputDir = Vector2Normalize(inputDir);
+        pos = Vector2Add(pos, Vector2Scale(inputDir, 250.0f * dt));
+    }
+}
+
+void Player::Draw() {
+    DrawCircleV(pos, 18.0f, SKYBLUE);
+}
+
+void Player::DrawInventoryUI() {
+    if (!showInventory) return;
+    Rectangle pRec = { 820, 40, 420, 620 };
+    DrawRectangleRec(pRec, GetColor(0x161622F4)); 
+    DrawRectangleLinesEx(pRec, 2, GOLD);
+    DrawText("INVENTORY & GEAR", pRec.x + 20, pRec.y + 20, 20, GOLD);
+    DrawText(TextFormat("Atk: %d  |  Def: %d  |  HP: %.0f/%d", totalAttack, totalDefense, health, totalMaxHealth), pRec.x + 20, pRec.y + 55, 14, RAYWHITE);
+
+    for (int i = 0; i < 16; i++) {
+        Rectangle sRec = { pRec.x + 20 + (i % 4) * 95, pRec.y + 90 + (i / 4) * 80, 85, 70 };
+        DrawRectangleRec(sRec, GetColor(0x222230FF)); 
+        DrawRectangleLines(sRec.x, sRec.y, sRec.width, sRec.height, DARKGRAY);
+        if (slotOccupied[i]) {
+            DrawRectangleLinesEx(sRec, 2, inventory[i].color);
+            DrawText(inventory[i].name.c_str(), sRec.x + 5, sRec.y + 10, 10, inventory[i].color);
+        }
+    }
+}
+#pragma once
+#include "Common.h"
+#include "ParticleEngine.h"
+
+enum BossState { BOSS_IDLE, BOSS_CHASE, BOSS_TELEGRAPH, BOSS_ATTACK, BOSS_COOLDOWN };
+
+class BossManager {
+public:
+    BossState state = BOSS_IDLE;
+    Vector2 pos = { 850.0f, 360.0f };
+    Vector2 attackTarget = { 0, 0 };
+    float maxHP = 350.0f, hp = 350.0f, dmg = 25.0f;
+    float timer = 0.0f, telegraphProgress = 0.0f;
+    bool enraged = false;
+
+    void Update(float dt, Vector2 playerPos, float playerDef, float& playerHP, ParticleEngine& particles);
+    void Draw();
+};
+#include "BossManager.h"
+
+void BossManager::Update(float dt, Vector2 playerPos, float playerDef, float& playerHP, ParticleEngine& particles) {
+    if (hp <= 0) return;
+    
+    timer += dt;
+    if (!enraged && hp <= (maxHP * 0.5f)) { enraged = true; dmg = 40.0f; }
+
+    switch (state) {
+        case BOSS_IDLE: 
+            if (timer >= 0.5f) { state = BOSS_CHASE; timer = 0.0f; } 
+            break;
+        case BOSS_CHASE: {
+            Vector2 dir = Vector2Normalize(Vector2Subtract(playerPos, pos));
+            pos = Vector2Add(pos, Vector2Scale(dir, (enraged ? 170.0f : 110.0f) * dt));
+            if (Vector2Distance(pos, playerPos) < 160.0f || timer > 3.0f) {
+                state = BOSS_TELEGRAPH; timer = 0.0f; attackTarget = playerPos;
+            }
+        } break;
+        case BOSS_TELEGRAPH: {
+            telegraphProgress = timer / (enraged ? 0.6f : 1.2f);
+            if (timer >= (enraged ? 0.6f : 1.2f)) { state = BOSS_ATTACK; timer = 0.0f; }
+        } break;
+        case BOSS_ATTACK: {
+            particles.Emit(attackTarget, RED, 30, 150.0f, 400.0f);
+            if (Vector2Distance(playerPos, attackTarget) <= 120.0f) {
+                float finalDmg = (dmg - playerDef > 5.0f) ? dmg - playerDef : 5.0f;
+                playerHP -= finalDmg;
+            }
+            state = BOSS_COOLDOWN; timer = 0.0f;
+        } break;
+        case BOSS_COOLDOWN: 
+            if (timer >= 1.0f) { state = BOSS_CHASE; timer = 0.0f; } 
+            break;
+    }
+}
+
+void BossManager::Draw() {
+    if (hp <= 0) return;
+    if (state == BOSS_TELEGRAPH) {
+        DrawCircleV(attackTarget, 120.0f * telegraphProgress, Fade(RED, 0.35f));
+        DrawCircleLines(attackTarget.x, attackTarget.y, 120.0f, RED);
+    }
+    DrawCircleV(pos, 35.0f, enraged ? PURPLE : MAROON);
+    DrawText(enraged ? "VOID TITAN [ENRAGED]" : "VOID TITAN", pos.x - 55, pos.y - 55, 12, RED);
+    DrawRectangle(pos.x - 40, pos.y + 42, 80, 6, RED);
+    DrawRectangle(pos.x - 40, pos.y + 42, (hp / maxHP) * 80, 6, GREEN);
+}
+#pragma once
+#include "Common.h"
+
+const int MAP_COLS = 16, MAP_ROWS = 10, TILE_SIZE = 80;
+
+class WorldManager {
+public:
+    int currentRoom = 0;
+    void DrawCurrentRoom();
+};
+#include "WorldManager.h"
+
+int roomMaps[2][MAP_ROWS][MAP_COLS] = {
+    {
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+        {1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1},
+        {1,0,1,1,0,0,1,0,1,1,1,0,1,1,0,1},
+        {1,0,1,0,0,0,0,0,0,0,1,0,0,1,0,1},
+        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1},
+        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1},
+        {1,0,1,0,0,0,0,0,0,0,1,0,0,1,0,1},
+        {1,0,1,1,0,0,1,0,1,1,1,0,1,1,0,1},
+        {1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1},
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+    },
+    {
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+        {1,0,0,0,1,0,0,0,0,0,0,1,0,0,0,1},
+        {1,0,1,0,1,0,1,1,1,1,0,1,0,1,0,1},
+        {1,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1},
+        {1,2,0,0,0,0,1,1,1,1,0,0,0,0,0,1},
+        {1,2,0,0,0,0,1,1,1,1,0,0,0,0,0,1},
+        {1,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1},
+        {1,0,1,0,1,0,1,1,1,1,0,1,0,1,0,1},
+        {1,0,0,0,1,0,0,0,0,0,0,1,0,0,0,1},
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+    }
+};
+
+void WorldManager::DrawCurrentRoom() {
+    Color wallCol = (currentRoom == 0) ? GetColor(0x2A2A3CFF) : GetColor(0x243424FF);
+    Color floorCol = (currentRoom == 0) ? GetColor(0x1A1A24FF) : GetColor(0x141C14FF);
+
+    for (int r = 0; r < MAP_ROWS; r++) {
+        for (int c = 0; c < MAP_COLS; c++) {
+            Rectangle tileRec = { (float)c * TILE_SIZE, (float)r * TILE_SIZE, (float)TILE_SIZE, (float)TILE_SIZE };
+            int type = roomMaps[currentRoom][r][c];
+            if (type == 1) DrawRectangleRec(tileRec, wallCol);
+            else if (type == 0) DrawRectangleRec(tileRec, floorCol);
+            else if (type == 2) DrawRectangleRec(tileRec, GREEN);
+            DrawRectangleLinesEx(tileRec, 1, GetColor(0x181824FF));
+        }
+    }
+}
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Modular OOP Engine");
+    SetTargetFPS(60);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Engine Updates
+        player.Update(dt, false);
+        boss.Update(dt, player.pos, (float)player.totalDefense, player.health, particles);
+        particles.Update(dt);
+
+        // Render Frame
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        player.Draw();
+        particles.Draw();
+        player.DrawInventoryUI();
+
+        DrawText("[WASD] Move | [E] Toggle Inventory", 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+
+Color GetRarityColor(Rarity r);
