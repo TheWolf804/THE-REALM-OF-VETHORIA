@@ -1,0 +1,360 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+
+enum GameState { STATE_MENU, STATE_SETTINGS, STATE_GAMEPLAY };
+enum Rarity { RARITY_COMMON, RARITY_UNCOMMON, RARITY_RARE, RARITY_EPIC, RARITY_LEGENDARY };
+enum ItemType { ITEM_WEAPON, ITEM_ARMOR, ITEM_POTION };
+
+struct Item {
+    std::string name;
+    ItemType type;
+    Rarity rarity;
+    int bonusAttack;
+    int bonusDefense;
+    int bonusHealth;
+    Color color;
+};
+
+Color GetRarityColor(Rarity r);
+
+// Active Spell Projectile
+struct SpellProjectile {
+    Vector2 pos;
+    Vector2 vel;
+    float radius;
+    float damage;
+    float lifetime;
+    bool active = false;
+#pragma once
+#include "Common.h"
+#include "ParticleEngine.h"
+#include <vector>
+
+class Player {
+public:
+    Vector2 pos = { 200.0f, 360.0f };
+    Vector2 lastMoveDir = { 1.0f, 0.0f };
+    
+    // Core Attributes & Level Progression
+    int level = 1;
+    int skillPoints = 3;
+    int strPoints = 0; // Strength (+Attack)
+    int agiPoints = 0; // Agility (+Speed & Dodge Efficiency)
+    int intPoints = 0; // Intelligence (+Mana & Spell Dmg)
+
+    // Base & Effective Stats
+    float health = 150.0f, maxHealth = 150.0f;
+    float mana = 100.0f, maxMana = 100.0f;
+    float stamina = 100.0f, maxStamina = 100.0f;
+    float moveSpeed = 250.0f;
+    
+    int totalAttack = 20, totalDefense = 5;
+
+    // Dodge Roll System
+    bool isRolling = false;
+    float rollTimer = 0.0f;
+    float rollDuration = 0.35f;
+    float rollSpeedMultiplier = 2.2f;
+    bool isInvulnerable = false;
+
+    // Projectile Container
+    std::vector<SpellProjectile> activeSpells;
+
+    // UI States
+    bool showInventory = false;
+    bool showSkillTree = false;
+
+    Item inventory[16];
+    bool slotOccupied[16] = { false };
+
+    Player();
+    void RecalculateStats();
+    void Update(float dt, ParticleEngine& particles);
+    void Draw();
+    void DrawHUD();
+    void DrawSkillTreeUI();
+    void DrawInventoryUI();
+    void PerformDodgeRoll();
+    void CastFireball(ParticleEngine& particles);
+};
+#include "Player.h"
+#include <cmath>
+
+Player::Player() {
+    inventory[0] = { "Initiate Sword", ITEM_WEAPON, RARITY_COMMON, 8, 0, 0, LIGHTGRAY };
+    slotOccupied[0] = true;
+    RecalculateStats();
+}
+
+void Player::RecalculateStats() {
+    totalAttack = 20 + (strPoints * 4) + (slotOccupied[0] ? inventory[0].bonusAttack : 0);
+    totalDefense = 5 + (agiPoints * 2);
+    maxHealth = 150.0f + (strPoints * 15.0f);
+    maxMana = 100.0f + (intPoints * 25.0f);
+    moveSpeed = 250.0f + (agiPoints * 10.0f);
+}
+
+void Player::PerformDodgeRoll() {
+    if (!isRolling && stamina >= 25.0f && Vector2Length(lastMoveDir) > 0) {
+        isRolling = true;
+        rollTimer = rollDuration;
+        stamina -= 25.0f;
+        isInvulnerable = true;
+    }
+}
+
+void Player::CastFireball(ParticleEngine& particles) {
+    if (mana >= 30.0f) {
+        mana -= 30.0f;
+        Vector2 mousePos = GetMousePosition();
+        Vector2 dir = Vector2Normalize(Vector2Subtract(mousePos, pos));
+        
+        SpellProjectile p;
+        p.pos = pos;
+        p.vel = Vector2Scale(dir, 550.0f);
+        p.radius = 12.0f;
+        p.damage = 35.0f + (intPoints * 8.0f);
+        p.lifetime = 2.0f;
+        p.active = true;
+
+        activeSpells.push_back(p);
+        particles.Emit(pos, ORANGE, 12, 50.0f, 150.0f);
+    }
+}
+
+void Player::Update(float dt, ParticleEngine& particles) {
+    // 1. Regenerate Resources
+    if (!isRolling) stamina = fminf(maxStamina, stamina + 25.0f * dt);
+    mana = fminf(maxMana, mana + 15.0f * dt);
+
+    // 2. Toggle UIs
+    if (IsKeyPressed(KEY_E)) showInventory = !showInventory;
+    if (IsKeyPressed(KEY_K)) showSkillTree = !showSkillTree;
+
+    // 3. Dodge Roll Processing
+    if (isRolling) {
+        rollTimer -= dt;
+        pos = Vector2Add(pos, Vector2Scale(lastMoveDir, moveSpeed * rollSpeedMultiplier * dt));
+        particles.Emit(pos, Fade(SKYBLUE, 0.4f), 2, 10.0f, 30.0f);
+
+        if (rollTimer <= 0.0f) {
+            isRolling = false;
+            isInvulnerable = false;
+        }
+    } else {
+        // Standard Movement Controls
+        Vector2 inputDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+        if (Vector2Length(inputDir) > 0) {
+            inputDir = Vector2Normalize(inputDir);
+            lastMoveDir = inputDir;
+            pos = Vector2Add(pos, Vector2Scale(inputDir, moveSpeed * dt));
+        }
+
+        // Action Inputs
+        if (IsKeyPressed(KEY_SPACE)) PerformDodgeRoll();
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) CastFireball(particles);
+    }
+
+    // 4. Update Spells
+    for (size_t i = 0; i < activeSpells.size(); i++) {
+        if (activeSpells[i].active) {
+            activeSpells[i].lifetime -= dt;
+            activeSpells[i].pos = Vector2Add(activeSpells[i].pos, Vector2Scale(activeSpells[i].vel, dt));
+            particles.Emit(activeSpells[i].pos, ORANGE, 2, 20.0f, 60.0f);
+
+            if (activeSpells[i].lifetime <= 0.0f) {
+                activeSpells[i].active = false;
+            }
+        }
+    }
+}
+
+void Player::Draw() {
+    // Draw Fireballs
+    for (const auto& spell : activeSpells) {
+        if (spell.active) {
+            DrawCircleV(spell.pos, spell.radius, ORANGE);
+            DrawCircleV(spell.pos, spell.radius * 0.6f, YELLOW);
+        }
+    }
+
+    // Draw Player Body (Fades if rolling/invulnerable)
+    Color playerColor = isInvulnerable ? Fade(SKYBLUE, 0.5f) : SKYBLUE;
+    DrawCircleV(pos, 18.0f, playerColor);
+    DrawCircleLines(pos.x, pos.y, 18.0f, RAYWHITE);
+}
+
+void Player::DrawHUD() {
+    // Health Bar
+    DrawRectangle(20, 20, 200, 16, GetColor(0x221111FF));
+    DrawRectangle(20, 20, (int)((health / maxHealth) * 200), 16, RED);
+    DrawRectangleLines(20, 20, 200, 16, RAYWHITE);
+    DrawText(TextFormat("HP: %.0f/%.0f", health, maxHealth), 25, 22, 11, RAYWHITE);
+
+    // Mana Bar
+    DrawRectangle(20, 42, 200, 14, GetColor(0x111122FF));
+    DrawRectangle(20, 42, (int)((mana / maxMana) * 200), 14, BLUE);
+    DrawRectangleLines(20, 42, 200, 14, RAYWHITE);
+    DrawText(TextFormat("MP: %.0f/%.0f", mana, maxMana), 25, 43, 11, RAYWHITE);
+
+    // Stamina Bar
+    DrawRectangle(20, 60, 200, 12, GetColor(0x112211FF));
+    DrawRectangle(20, 60, (int)((stamina / maxStamina) * 200), 12, GREEN);
+    DrawRectangleLines(20, 60, 200, 12, RAYWHITE);
+    DrawText(TextFormat("SP: %.0f/%.0f", stamina, maxStamina), 25, 61, 10, RAYWHITE);
+}
+
+void Player::DrawSkillTreeUI() {
+    if (!showSkillTree) return;
+
+    Rectangle box = { 340, 140, 600, 440 };
+    DrawRectangleRec(box, GetColor(0x12121CF4));
+    DrawRectangleLinesEx(box, 2, GOLD);
+
+    DrawText("SKILL TREE & ATTRIBUTES", box.x + 160, box.y + 25, 20, GOLD);
+    DrawText(TextFormat("Available Points: %d", skillPoints), box.x + 220, box.y + 60, 16, GREEN);
+
+    // Attribute Rows
+    struct AttrRow { const char* name; int points; };
+    AttrRow rows[3] = {
+        { "STRENGTH (+Atk, +HP)", strPoints },
+        { "AGILITY (+Def, +Speed)", agiPoints },
+        { "INTELLIGENCE (+Mana, +Spell Dmg)", intPoints }
+    };
+
+    for (int i = 0; i < 3; i++) {
+        int yPos = box.y + 120 + (i * 80);
+        DrawText(rows[i].name, box.x + 40, yPos + 10, 15, RAYWHITE);
+        DrawText(TextFormat("Pts: %d", rows[i].points), box.x + 360, yPos + 10, 15, SKYBLUE);
+
+        Rectangle btn = { box.x + 450, (float)yPos, 90, 35 };
+        bool canUpgrade = (skillPoints > 0);
+        
+        if (canUpgrade && CheckCollisionPointRec(GetMousePosition(), btn)) {
+            DrawRectangleRec(btn, MAROON);
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                skillPoints--;
+                if (i == 0) strPoints++;
+                else if (i == 1) agiPoints++;
+                else if (i == 2) intPoints++;
+                RecalculateStats();
+            }
+        } else {
+            DrawRectangleRec(btn, canUpgrade ? DARKGRAY : GetColor(0x333333FF));
+        }
+        DrawRectangleLinesRec(btn, GRAY);
+        DrawText("+ UP", btn.x + 24, btn.y + 8, 14, canUpgrade ? RAYWHITE : DARKGRAY);
+    }
+}
+#include "BossManager.h"
+#include "Player.h"
+
+void BossManager::Update(float dt, Vector2 playerPos, float playerDef, float& playerHP, ParticleEngine& particles) {
+    if (hp <= 0) return;
+    
+    timer += dt;
+    if (!enraged && hp <= (maxHP * 0.5f)) { enraged = true; dmg = 40.0f; }
+
+    switch (state) {
+        case BOSS_IDLE: 
+            if (timer >= 0.5f) { state = BOSS_CHASE; timer = 0.0f; } 
+            break;
+        case BOSS_CHASE: {
+            Vector2 dir = Vector2Normalize(Vector2Subtract(playerPos, pos));
+            pos = Vector2Add(pos, Vector2Scale(dir, (enraged ? 170.0f : 110.0f) * dt));
+            if (Vector2Distance(pos, playerPos) < 160.0f || timer > 3.0f) {
+                state = BOSS_TELEGRAPH; timer = 0.0f; attackTarget = playerPos;
+            }
+        } break;
+        case BOSS_TELEGRAPH: {
+            telegraphProgress = timer / (enraged ? 0.6f : 1.2f);
+            if (timer >= (enraged ? 0.6f : 1.2f)) { state = BOSS_ATTACK; timer = 0.0f; }
+        } break;
+        case BOSS_ATTACK: {
+            particles.Emit(attackTarget, RED, 30, 150.0f, 400.0f);
+            // Note: In full loop, player invulnerability check will prevent damage during Dodge Rolls!
+            if (Vector2Distance(playerPos, attackTarget) <= 120.0f) {
+                float finalDmg = (dmg - playerDef > 5.0f) ? dmg - playerDef : 5.0f;
+                playerHP -= finalDmg;
+            }
+            state = BOSS_COOLDOWN; timer = 0.0f;
+        } break;
+        case BOSS_COOLDOWN: 
+            if (timer >= 1.0f) { state = BOSS_CHASE; timer = 0.0f; } 
+            break;
+    }
+}
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Advanced RPG Combat Engine");
+    SetTargetFPS(60);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // 1. Update Core Engines
+        player.Update(dt, particles);
+        
+        // Handle Boss Combat & Dodge Roll i-Frame Protection
+        float dummyHP = player.health;
+        boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+        if (!player.isInvulnerable) {
+            player.health = dummyHP;
+        }
+
+        particles.Update(dt);
+
+        // 2. Fireball vs Boss Collisions
+        for (auto& spell : player.activeSpells) {
+            if (spell.active && boss.hp > 0) {
+                if (CheckCollisionCircles(spell.pos, spell.radius, boss.pos, 35.0f)) {
+                    boss.hp -= spell.damage;
+                    spell.active = false;
+                    particles.Emit(spell.pos, GOLD, 25, 100.0f, 300.0f);
+                }
+            }
+        }
+
+        // 3. Render Pass
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        player.Draw();
+        particles.Draw();
+
+        // Overlay UIs
+        player.DrawHUD();
+        player.DrawSkillTreeUI();
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [SPACE] Dodge Roll | [RMB] Fireball | [K] Skill Tree | [E] Inventory", 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+
+};
