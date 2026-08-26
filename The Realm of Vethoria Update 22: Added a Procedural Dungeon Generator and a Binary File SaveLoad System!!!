@@ -1,0 +1,541 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+#include <fstream>
+#include <vector>
+
+enum GameState { STATE_MENU, STATE_SETTINGS, STATE_GAMEPLAY };
+enum Rarity { RARITY_COMMON, RARITY_UNCOMMON, RARITY_RARE, RARITY_EPIC, RARITY_LEGENDARY };
+enum ItemType { ITEM_WEAPON, ITEM_ARMOR, ITEM_POTION };
+
+struct Item {
+    char name[32]; // Fixed-size char array for clean binary serialization
+    ItemType type;
+    Rarity rarity;
+    int bonusAttack;
+    int bonusDefense;
+    int bonusHealth;
+    Color color;
+};
+
+Color GetRarityColor(Rarity r);
+
+struct SpellProjectile {
+    Vector2 pos;
+    Vector2 vel;
+    float radius;
+    float damage;
+    float lifetime;
+    bool active = false;
+};
+
+// Binary Save File Structure
+struct SaveData {
+    int level;
+    int skillPoints;
+    int strPoints;
+    int agiPoints;
+    int intPoints;
+    float health;
+    float maxHealth;
+    int currentRoom;
+    Item inventory[16];
+    bool slotOccupied[16];
+#pragma once
+#include "Common.h"
+
+const int MAP_COLS = 16, MAP_ROWS = 10, TILE_SIZE = 80;
+
+class WorldManager {
+public:
+    int currentRoom = 0;
+    int dungeonFloor[MAP_ROWS][MAP_COLS];
+    Vector2 playerSpawn = { 160.0f, 160.0f };
+    Vector2 exitPortal = { 1120.0f, 560.0f };
+
+    WorldManager();
+    void GenerateProceduralDungeon(int seed);
+    void DrawCurrentRoom();
+    bool IsWallTile(Vector2 worldPos);
+    bool CheckExitCollision(Vector2 playerPos);
+};
+#include "WorldManager.h"
+#include <cstdlib>
+
+WorldManager::WorldManager() {
+    GenerateProceduralDungeon(12345);
+}
+
+void WorldManager::GenerateProceduralDungeon(int seed) {
+    SetRandomSeed(seed);
+
+    // 1. Fill map with solid walls (1 = Wall, 0 = Floor, 2 = Exit Portal)
+    for (int r = 0; r < MAP_ROWS; r++) {
+        for (int c = 0; c < MAP_COLS; c++) {
+            dungeonFloor[r][c] = 1;
+        }
+    }
+
+    // 2. Random Walk Carving Algorithm
+    int startX = 2, startY = 2;
+    int currX = startX, currY = startY;
+    dungeonFloor[currY][currX] = 0;
+    playerSpawn = { (float)currX * TILE_SIZE + 40.0f, (float)currY * TILE_SIZE + 40.0f };
+
+    int floorTilesTarget = 65;
+    int carved = 1;
+
+    int dirs[4][2] = { {0, -1}, {0, 1}, {-1, 0}, {1, 0} };
+
+    while (carved < floorTilesTarget) {
+        int dirIndex = GetRandomValue(0, 3);
+        int nextX = currX + dirs[dirIndex][0];
+        int nextY = currY + dirs[dirIndex][1];
+
+        // Keep walker inside map borders
+        if (nextX >= 1 && nextX < MAP_COLS - 1 && nextY >= 1 && nextY < MAP_ROWS - 1) {
+            if (dungeonFloor[nextY][nextX] == 1) {
+                dungeonFloor[nextY][nextX] = 0;
+                carved++;
+            }
+            currX = nextX;
+            currY = nextY;
+        }
+    }
+
+    // 3. Place Exit Portal on the last carved tile
+    dungeonFloor[currY][currX] = 2;
+    exitPortal = { (float)currX * TILE_SIZE + 40.0f, (float)currY * TILE_SIZE + 40.0f };
+}
+
+bool WorldManager::IsWallTile(Vector2 worldPos) {
+    int c = (int)(worldPos.x / TILE_SIZE);
+    int r = (int)(worldPos.y / TILE_SIZE);
+    if (r < 0 || r >= MAP_ROWS || c < 0 || c >= MAP_COLS) return true;
+    return (dungeonFloor[r][c] == 1);
+}
+
+bool WorldManager::CheckExitCollision(Vector2 playerPos) {
+    return (Vector2Distance(playerPos, exitPortal) < 35.0f);
+}
+
+void WorldManager::DrawCurrentRoom() {
+    Color wallCol = GetColor(0x222230FF);
+    Color floorCol = GetColor(0x14141EFF);
+
+    for (int r = 0; r < MAP_ROWS; r++) {
+        for (int c = 0; c < MAP_COLS; c++) {
+            Rectangle tileRec = { (float)c * TILE_SIZE, (float)r * TILE_SIZE, (float)TILE_SIZE, (float)TILE_SIZE };
+            int type = dungeonFloor[r][c];
+
+            if (type == 1) DrawRectangleRec(tileRec, wallCol);
+            else if (type == 0) DrawRectangleRec(tileRec, floorCol);
+            else if (type == 2) {
+                DrawRectangleRec(tileRec, floorCol);
+                DrawCircleV(exitPortal, 25.0f, Fade(PURPLE, 0.6f));
+                DrawCircleLines(exitPortal.x, exitPortal.y, 25.0f, VIOLET);
+            }
+            DrawRectangleLinesEx(tileRec, 1, GetColor(0x101018FF));
+        }
+    }
+}
+#pragma once
+#include "Common.h"
+#include "ParticleEngine.h"
+#include <vector>
+
+class Player {
+public:
+    Vector2 pos = { 200.0f, 360.0f };
+    Vector2 lastMoveDir = { 1.0f, 0.0f };
+    
+    int level = 1;
+    int skillPoints = 3;
+    int strPoints = 0;
+    int agiPoints = 0;
+    int intPoints = 0;
+
+    float health = 150.0f, maxHealth = 150.0f;
+    float mana = 100.0f, maxMana = 100.0f;
+    float stamina = 100.0f, maxStamina = 100.0f;
+    float moveSpeed = 250.0f;
+    
+    int totalAttack = 20, totalDefense = 5;
+
+    bool isRolling = false;
+    float rollTimer = 0.0f;
+    float rollDuration = 0.35f;
+    float rollSpeedMultiplier = 2.2f;
+    bool isInvulnerable = false;
+
+    std::vector<SpellProjectile> activeSpells;
+
+    bool showInventory = false;
+    bool showSkillTree = false;
+
+    Item inventory[16];
+    bool slotOccupied[16] = { false };
+
+    Player();
+    void RecalculateStats();
+    void Update(float dt, ParticleEngine& particles);
+    void Draw();
+    void DrawHUD();
+    void DrawSkillTreeUI();
+    void DrawInventoryUI();
+    void PerformDodgeRoll();
+    void CastFireball(ParticleEngine& particles);
+
+    // Save/Load Systems
+    bool SaveToFile(const std::string& filename, int currentRoom);
+    bool LoadFromFile(const std::string& filename, int& currentRoom);
+};
+#include "Player.h"
+#include <cstring>
+
+Color GetRarityColor(Rarity r) {
+    if (r == RARITY_LEGENDARY) return GOLD;
+    if (r == RARITY_EPIC) return PURPLE;
+    if (r == RARITY_RARE) return SKYBLUE;
+    if (r == RARITY_UNCOMMON) return GREEN;
+    return LIGHTGRAY;
+}
+
+Player::Player() {
+    Item starterWeapon;
+    strncpy(starterWeapon.name, "Initiate Sword", sizeof(starterWeapon.name));
+    starterWeapon.type = ITEM_WEAPON;
+    starterWeapon.rarity = RARITY_COMMON;
+    starterWeapon.bonusAttack = 8;
+    starterWeapon.bonusDefense = 0;
+    starterWeapon.bonusHealth = 0;
+    starterWeapon.color = LIGHTGRAY;
+
+    inventory[0] = starterWeapon;
+    slotOccupied[0] = true;
+    RecalculateStats();
+}
+
+bool Player::SaveToFile(const std::string& filename, int currentRoom) {
+    std::ofstream out(filename, std::ios::binary);
+    if (!out.is_open()) return false;
+
+    SaveData data;
+    data.level = level;
+    data.skillPoints = skillPoints;
+    data.strPoints = strPoints;
+    data.agiPoints = agiPoints;
+    data.intPoints = intPoints;
+    data.health = health;
+    data.maxHealth = maxHealth;
+    data.currentRoom = currentRoom;
+
+    for (int i = 0; i < 16; i++) {
+        data.inventory[i] = inventory[i];
+        data.slotOccupied[i] = slotOccupied[i];
+    }
+
+    out.write(reinterpret_cast<const char*>(&data), sizeof(SaveData));
+    out.close();
+    return true;
+}
+
+bool Player::LoadFromFile(const std::string& filename, int& currentRoom) {
+    std::ifstream in(filename, std::ios::binary);
+    if (!in.is_open()) return false;
+
+    SaveData data;
+    in.read(reinterpret_cast<char*>(&data), sizeof(SaveData));
+    in.close();
+
+    level = data.level;
+    skillPoints = data.skillPoints;
+    strPoints = data.strPoints;
+    agiPoints = data.agiPoints;
+    intPoints = data.intPoints;
+    health = data.health;
+    maxHealth = data.maxHealth;
+    currentRoom = data.currentRoom;
+
+    for (int i = 0; i < 16; i++) {
+        inventory[i] = data.inventory[i];
+        slotOccupied[i] = data.slotOccupied[i];
+    }
+
+    RecalculateStats();
+    return true;
+}
+
+void Player::RecalculateStats() {
+    totalAttack = 20 + (strPoints * 4) + (slotOccupied[0] ? inventory[0].bonusAttack : 0);
+    totalDefense = 5 + (agiPoints * 2);
+    maxHealth = 150.0f + (strPoints * 15.0f);
+    maxMana = 100.0f + (intPoints * 25.0f);
+    moveSpeed = 250.0f + (agiPoints * 10.0f);
+}
+
+void Player::PerformDodgeRoll() {
+    if (!isRolling && stamina >= 25.0f && Vector2Length(lastMoveDir) > 0) {
+        isRolling = true;
+        rollTimer = rollDuration;
+        stamina -= 25.0f;
+        isInvulnerable = true;
+    }
+}
+
+void Player::CastFireball(ParticleEngine& particles) {
+    if (mana >= 30.0f) {
+        mana -= 30.0f;
+        Vector2 mousePos = GetMousePosition();
+        Vector2 dir = Vector2Normalize(Vector2Subtract(mousePos, pos));
+        
+        SpellProjectile p;
+        p.pos = pos;
+        p.vel = Vector2Scale(dir, 550.0f);
+        p.radius = 12.0f;
+        p.damage = 35.0f + (intPoints * 8.0f);
+        p.lifetime = 2.0f;
+        p.active = true;
+
+        activeSpells.push_back(p);
+        particles.Emit(pos, ORANGE, 12, 50.0f, 150.0f);
+    }
+}
+
+void Player::Update(float dt, ParticleEngine& particles) {
+    if (!isRolling) stamina = fminf(maxStamina, stamina + 25.0f * dt);
+    mana = fminf(maxMana, mana + 15.0f * dt);
+
+    if (IsKeyPressed(KEY_E)) showInventory = !showInventory;
+    if (IsKeyPressed(KEY_K)) showSkillTree = !showSkillTree;
+
+    if (isRolling) {
+        rollTimer -= dt;
+        pos = Vector2Add(pos, Vector2Scale(lastMoveDir, moveSpeed * rollSpeedMultiplier * dt));
+        particles.Emit(pos, Fade(SKYBLUE, 0.4f), 2, 10.0f, 30.0f);
+
+        if (rollTimer <= 0.0f) {
+            isRolling = false;
+            isInvulnerable = false;
+        }
+    } else {
+        Vector2 inputDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) inputDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) inputDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) inputDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
+
+        if (Vector2Length(inputDir) > 0) {
+            inputDir = Vector2Normalize(inputDir);
+            lastMoveDir = inputDir;
+            pos = Vector2Add(pos, Vector2Scale(inputDir, moveSpeed * dt));
+        }
+
+        if (IsKeyPressed(KEY_SPACE)) PerformDodgeRoll();
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) CastFireball(particles);
+    }
+
+    for (size_t i = 0; i < activeSpells.size(); i++) {
+        if (activeSpells[i].active) {
+            activeSpells[i].lifetime -= dt;
+            activeSpells[i].pos = Vector2Add(activeSpells[i].pos, Vector2Scale(activeSpells[i].vel, dt));
+            particles.Emit(activeSpells[i].pos, ORANGE, 2, 20.0f, 60.0f);
+
+            if (activeSpells[i].lifetime <= 0.0f) activeSpells[i].active = false;
+        }
+    }
+}
+
+void Player::Draw() {
+    for (const auto& spell : activeSpells) {
+        if (spell.active) {
+            DrawCircleV(spell.pos, spell.radius, ORANGE);
+            DrawCircleV(spell.pos, spell.radius * 0.6f, YELLOW);
+        }
+    }
+    Color playerColor = isInvulnerable ? Fade(SKYBLUE, 0.5f) : SKYBLUE;
+    DrawCircleV(pos, 18.0f, playerColor);
+    DrawCircleLines(pos.x, pos.y, 18.0f, RAYWHITE);
+}
+
+void Player::DrawHUD() {
+    DrawRectangle(20, 20, 200, 16, GetColor(0x221111FF));
+    DrawRectangle(20, 20, (int)((health / maxHealth) * 200), 16, RED);
+    DrawRectangleLines(20, 20, 200, 16, RAYWHITE);
+    DrawText(TextFormat("HP: %.0f/%.0f", health, maxHealth), 25, 22, 11, RAYWHITE);
+
+    DrawRectangle(20, 42, 200, 14, GetColor(0x111122FF));
+    DrawRectangle(20, 42, (int)((mana / maxMana) * 200), 14, BLUE);
+    DrawRectangleLines(20, 42, 200, 14, RAYWHITE);
+    DrawText(TextFormat("MP: %.0f/%.0f", mana, maxMana), 25, 43, 11, RAYWHITE);
+
+    DrawRectangle(20, 60, 200, 12, GetColor(0x112211FF));
+    DrawRectangle(20, 60, (int)((stamina / maxStamina) * 200), 12, GREEN);
+    DrawRectangleLines(20, 60, 200, 12, RAYWHITE);
+    DrawText(TextFormat("SP: %.0f/%.0f", stamina, maxStamina), 25, 61, 10, RAYWHITE);
+}
+
+void Player::DrawSkillTreeUI() {
+    if (!showSkillTree) return;
+
+    Rectangle box = { 340, 140, 600, 440 };
+    DrawRectangleRec(box, GetColor(0x12121CF4));
+    DrawRectangleLinesEx(box, 2, GOLD);
+
+    DrawText("SKILL TREE & ATTRIBUTES", box.x + 160, box.y + 25, 20, GOLD);
+    DrawText(TextFormat("Available Points: %d", skillPoints), box.x + 220, box.y + 60, 16, GREEN);
+
+    struct AttrRow { const char* name; int points; };
+    AttrRow rows[3] = {
+        { "STRENGTH (+Atk, +HP)", strPoints },
+        { "AGILITY (+Def, +Speed)", agiPoints },
+        { "INTELLIGENCE (+Mana, +Spell Dmg)", intPoints }
+    };
+
+    for (int i = 0; i < 3; i++) {
+        int yPos = box.y + 120 + (i * 80);
+        DrawText(rows[i].name, box.x + 40, yPos + 10, 15, RAYWHITE);
+        DrawText(TextFormat("Pts: %d", rows[i].points), box.x + 360, yPos + 10, 15, SKYBLUE);
+
+        Rectangle btn = { box.x + 450, (float)yPos, 90, 35 };
+        bool canUpgrade = (skillPoints > 0);
+        
+        if (canUpgrade && CheckCollisionPointRec(GetMousePosition(), btn)) {
+            DrawRectangleRec(btn, MAROON);
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                skillPoints--;
+                if (i == 0) strPoints++;
+                else if (i == 1) agiPoints++;
+                else if (i == 2) intPoints++;
+                RecalculateStats();
+            }
+        } else {
+            DrawRectangleRec(btn, canUpgrade ? DARKGRAY : GetColor(0x333333FF));
+        }
+        DrawRectangleLinesRec(btn, GRAY);
+        DrawText("+ UP", btn.x + 24, btn.y + 8, 14, canUpgrade ? RAYWHITE : DARKGRAY);
+    }
+}
+
+void Player::DrawInventoryUI() {
+    if (!showInventory) return;
+    Rectangle pRec = { 820, 40, 420, 620 };
+    DrawRectangleRec(pRec, GetColor(0x161622F4)); 
+    DrawRectangleLinesEx(pRec, 2, GOLD);
+    DrawText("INVENTORY & GEAR", pRec.x + 20, pRec.y + 20, 20, GOLD);
+    DrawText(TextFormat("Atk: %d  |  Def: %d  |  HP: %.0f/%.0f", totalAttack, totalDefense, health, maxHealth), pRec.x + 20, pRec.y + 55, 14, RAYWHITE);
+
+    for (int i = 0; i < 16; i++) {
+        Rectangle sRec = { pRec.x + 20 + (i % 4) * 95, pRec.y + 90 + (i / 4) * 80, 85, 70 };
+        DrawRectangleRec(sRec, GetColor(0x222230FF)); 
+        DrawRectangleLines(sRec.x, sRec.y, sRec.width, sRec.height, DARKGRAY);
+        if (slotOccupied[i]) {
+            DrawRectangleLinesEx(sRec, 2, inventory[i].color);
+            DrawText(inventory[i].name, sRec.x + 5, sRec.y + 10, 10, inventory[i].color);
+        }
+    }
+}
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Procedural RPG & Save Engine");
+    SetTargetFPS(60);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+
+    player.pos = world.playerSpawn;
+    std::string notification = "";
+    float notifTimer = 0.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // 1. Save & Load Inputs
+        if (IsKeyPressed(KEY_F5)) {
+            if (player.SaveToFile("savegame.dat", world.currentRoom)) {
+                notification = "GAME SAVED TO 'savegame.dat'!";
+                notifTimer = 2.5f;
+            }
+        }
+        if (IsKeyPressed(KEY_F9)) {
+            if (player.LoadFromFile("savegame.dat", world.currentRoom)) {
+                world.GenerateProceduralDungeon(100 + world.currentRoom * 55);
+                player.pos = world.playerSpawn;
+                notification = "GAME LOADED SUCCESSFULLY!";
+                notifTimer = 2.5f;
+            }
+        }
+
+        // 2. Room Transition / Portal Step
+        if (world.CheckExitCollision(player.pos)) {
+            world.currentRoom++;
+            world.GenerateProceduralDungeon(GetRandomValue(1, 99999));
+            player.pos = world.playerSpawn;
+            boss.hp = boss.maxHP; // Reset boss on new floor
+            notification = TextFormat("ENTERED DUNGEON FLOOR %d", world.currentRoom + 1);
+            notifTimer = 2.5f;
+        }
+
+        // 3. Engine Updates
+        player.Update(dt, particles);
+        
+        float dummyHP = player.health;
+        boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+        if (!player.isInvulnerable) player.health = dummyHP;
+
+        particles.Update(dt);
+
+        // Spell Hit Collisions
+        for (auto& spell : player.activeSpells) {
+            if (spell.active && boss.hp > 0) {
+                if (CheckCollisionCircles(spell.pos, spell.radius, boss.pos, 35.0f)) {
+                    boss.hp -= spell.damage;
+                    spell.active = false;
+                    particles.Emit(spell.pos, GOLD, 25, 100.0f, 300.0f);
+                }
+            }
+        }
+
+        if (notifTimer > 0) notifTimer -= dt;
+
+        // 4. Render Frame
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        player.Draw();
+        particles.Draw();
+
+        player.DrawHUD();
+        player.DrawSkillTreeUI();
+        player.DrawInventoryUI();
+
+        // Save/Load Notifications
+        if (notifTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 200, 20, 400, 35, GetColor(0x000000D0));
+            DrawRectangleLines(screenW / 2 - 200, 20, 400, 35, GOLD);
+            DrawText(notification.c_str(), screenW / 2 - MeasureText(notification.c_str(), 14) / 2, 30, 14, GOLD);
+        }
+
+        // Controls Bar
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [SPACE] Roll | [RMB] Fireball | [K] Skill Tree | [F5] Save | [F9] Load", 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+};
