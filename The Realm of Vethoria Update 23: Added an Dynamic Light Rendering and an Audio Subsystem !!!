@@ -1,0 +1,274 @@
+#pragma once
+#include "raylib.h"
+
+class AudioManager {
+private:
+    Music bgm;
+    Sound sfxFireball;
+    Sound sfxDodge;
+    Sound sfxHit;
+    bool audioReady = false;
+
+public:
+    AudioManager();
+    ~AudioManager();
+
+    void Init();
+    void Update();
+    void PlayFireballSFX();
+    void PlayDodgeSFX();
+    void PlayHitSFX();
+};
+#include "AudioManager.h"
+
+AudioManager::AudioManager() {}
+
+AudioManager::~AudioManager() {
+    if (audioReady) {
+        UnloadMusicStream(bgm);
+        UnloadSound(sfxFireball);
+        UnloadSound(sfxDodge);
+        UnloadSound(sfxHit);
+        CloseAudioDevice();
+    }
+}
+
+void AudioManager::Init() {
+    InitAudioDevice();
+    if (IsAudioDeviceReady()) {
+        audioReady = true;
+        
+        // Load Audio Assets (Ensure files exist in assets/ directory)
+        // bgm = LoadMusicStream("assets/dungeon_theme.mp3");
+        // sfxFireball = LoadSound("assets/fireball.wav");
+        // sfxDodge = LoadSound("assets/dodge.wav");
+        // sfxHit = LoadSound("assets/hit.wav");
+        
+        // PlayMusicStream(bgm);
+        // SetMusicVolume(bgm, 0.4f);
+    }
+}
+
+void AudioManager::Update() {
+    if (audioReady) {
+        UpdateMusicStream(bgm);
+    }
+}
+
+void AudioManager::PlayFireballSFX() {
+    if (audioReady && IsSoundReady(sfxFireball)) PlaySound(sfxFireball);
+}
+
+void AudioManager::PlayDodgeSFX() {
+    if (audioReady && IsSoundReady(sfxDodge)) PlaySound(sfxDodge);
+}
+
+void AudioManager::PlayHitSFX() {
+    if (audioReady && IsSoundReady(sfxHit)) PlaySound(sfxHit);
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+
+struct LightSource {
+    Vector2 pos;
+    float radius;
+    Color color;
+    float intensity;
+};
+
+class LightEngine {
+private:
+    RenderTexture2D lightMap;
+    int width, height;
+
+public:
+    LightEngine(int w, int h);
+    ~LightEngine();
+
+    void BeginLightPass();
+    void DrawLight(Vector2 pos, float radius, Color color, float intensity);
+    void EndLightPass(Color ambientColor);
+};
+#include "LightEngine.h"
+
+LightEngine::LightEngine(int w, int h) : width(w), height(h) {
+    lightMap = LoadRenderTexture(w, h);
+}
+
+LightEngine::~LightEngine() {
+    UnloadRenderTexture(lightMap);
+}
+
+void LightEngine::BeginLightPass() {
+    BeginTextureMode(lightMap);
+    ClearBackground(BLACK);
+    BeginBlendMode(BLEND_ADDITIVE);
+}
+
+void LightEngine::DrawLight(Vector2 pos, float radius, Color color, float intensity) {
+    // Gradient light drawing
+    int rings = 12;
+    for (int i = rings; i > 0; i--) {
+        float factor = (float)i / (float)rings;
+        float currentRadius = radius * factor;
+        unsigned char alpha = (unsigned char)(255.0f * (1.0f - factor) * intensity);
+        Color c = color;
+        c.a = alpha;
+        DrawCircleV(pos, currentRadius, c);
+    }
+}
+
+void LightEngine::EndLightPass(Color ambientColor) {
+    // Fill background ambient light level
+    DrawRectangle(0, 0, width, height, ambientColor);
+    EndBlendMode();
+    EndTextureMode();
+
+    // Multiply light texture over scene
+    BeginBlendMode(BLEND_MULTIPLY);
+    // Render texture coordinates are flipped on the Y axis in Raylib
+    DrawTextureRec(lightMap.texture, (Rectangle){ 0, 0, (float)width, (float)-height }, (Vector2){ 0, 0 }, WHITE);
+    EndBlendMode();
+}
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+#include "LightEngine.h"
+#include "AudioManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Dynamic Lighting & Audio System");
+    SetTargetFPS(60);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    AudioManager audio;
+
+    audio.Init();
+    player.pos = world.playerSpawn;
+
+    std::string notification = "";
+    float notifTimer = 0.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // 1. Audio Updates
+        audio.Update();
+
+        // Save & Load Controls
+        if (IsKeyPressed(KEY_F5)) {
+            if (player.SaveToFile("savegame.dat", world.currentRoom)) {
+                notification = "GAME SAVED TO 'savegame.dat'!";
+                notifTimer = 2.5f;
+            }
+        }
+        if (IsKeyPressed(KEY_F9)) {
+            if (player.LoadFromFile("savegame.dat", world.currentRoom)) {
+                world.GenerateProceduralDungeon(100 + world.currentRoom * 55);
+                player.pos = world.playerSpawn;
+                notification = "GAME LOADED SUCCESSFULLY!";
+                notifTimer = 2.5f;
+            }
+        }
+
+        // Room Portal Transition
+        if (world.CheckExitCollision(player.pos)) {
+            world.currentRoom++;
+            world.GenerateProceduralDungeon(GetRandomValue(1, 99999));
+            player.pos = world.playerSpawn;
+            boss.hp = boss.maxHP;
+            notification = TextFormat("ENTERED DUNGEON FLOOR %d", world.currentRoom + 1);
+            notifTimer = 2.5f;
+        }
+
+        // SFX Triggers on Actions
+        if (IsKeyPressed(KEY_SPACE) && player.stamina >= 25.0f) audio.PlayDodgeSFX();
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && player.mana >= 30.0f) audio.PlayFireballSFX();
+
+        // Engine Updates
+        player.Update(dt, particles);
+        
+        float dummyHP = player.health;
+        boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+        if (!player.isInvulnerable) player.health = dummyHP;
+
+        particles.Update(dt);
+
+        // Spell Hits & Sound Effects
+        for (auto& spell : player.activeSpells) {
+            if (spell.active && boss.hp > 0) {
+                if (CheckCollisionCircles(spell.pos, spell.radius, boss.pos, 35.0f)) {
+                    boss.hp -= spell.damage;
+                    spell.active = false;
+                    particles.Emit(spell.pos, GOLD, 25, 100.0f, 300.0f);
+                    audio.PlayHitSFX();
+                }
+            }
+        }
+
+        if (notifTimer > 0) notifTimer -= dt;
+
+        // 2. Main Render Pass (Base World)
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        player.Draw();
+        particles.Draw();
+
+        // 3. Dynamic Lighting Pass
+        lighting.BeginLightPass();
+        
+        // Player Torch Light
+        lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+        
+        // Portal Soft Blue Glow
+        lighting.DrawLight(world.exitPortal, 180.0f, PURPLE, 0.7f);
+
+        // Boss Aura Light
+        if (boss.hp > 0) {
+            lighting.DrawLight(boss.pos, 160.0f, RED, boss.enraged ? 0.9f : 0.5f);
+        }
+
+        // Fireball Spells Bright Glow
+        for (const auto& spell : player.activeSpells) {
+            if (spell.active) {
+                lighting.DrawLight(spell.pos, 140.0f, YELLOW, 0.95f);
+            }
+        }
+        
+        // Dark Ambient Mask
+        lighting.EndLightPass(GetColor(0x181822FF));
+
+        // 4. UI Layer Pass (Rendered above light mask)
+        player.DrawHUD();
+        player.DrawSkillTreeUI();
+        player.DrawInventoryUI();
+
+        if (notifTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 200, 20, 400, 35, GetColor(0x000000D0));
+            DrawRectangleLines(screenW / 2 - 200, 20, 400, 35, GOLD);
+            DrawText(notification.c_str(), screenW / 2 - MeasureText(notification.c_str(), 14) / 2, 30, 14, GOLD);
+        }
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [SPACE] Roll | [RMB] Fireball | Dynamic Ambient Lighting Active", 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+
+}
