@@ -1,0 +1,338 @@
+#pragma once
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include <vector>
+
+enum EnemyType { ENEMY_SKELETON, ENEMY_GOBLIN, ENEMY_ORC };
+
+struct Minion {
+    Vector2 pos;
+    float hp, maxHp;
+    float speed;
+    float damage;
+    EnemyType type;
+    bool active = false;
+};
+
+struct LootDrop {
+    Vector2 pos;
+    Item item;
+    float pickupRadius = 25.0f;
+    float floatTimer = 0.0f;
+    bool active = false;
+};
+
+class EnemyWaveManager {
+public:
+    int currentWave = 1;
+    float waveTimer = 0.0f;
+    bool waveInProgress = false;
+
+    std::vector<Minion> minions;
+    std::vector<LootDrop> groundLoot;
+
+    EnemyWaveManager();
+    void StartWave(int waveNumber);
+    void SpawnLoot(Vector2 spawnPos);
+    void Update(float dt, Player& player, ParticleEngine& particles);
+    void Draw();
+#include "EnemyWaveManager.h"
+#include <cstdlib>
+#include <cmath>
+#include <cstring>
+
+EnemyWaveManager::EnemyWaveManager() {
+    StartWave(1);
+}
+
+void EnemyWaveManager::StartWave(int waveNumber) {
+    currentWave = waveNumber;
+    minions.clear();
+    int enemyCount = 3 + (waveNumber * 2);
+
+    for (int i = 0; i < enemyCount; i++) {
+        Minion m;
+        // Spawn randomly around map borders
+        float angle = (float)GetRandomValue(0, 360) * DEG2RAD;
+        float dist = (float)GetRandomValue(400, 600);
+        m.pos = { 640.0f + cosf(angle) * dist, 360.0f + sinf(angle) * dist };
+        m.maxHp = 30.0f + (waveNumber * 10.0f);
+        m.hp = m.maxHp;
+        m.speed = 100.0f + (float)GetRandomValue(0, 40);
+        m.damage = 10.0f + (waveNumber * 2.0f);
+        m.type = ENEMY_SKELETON;
+        m.active = true;
+        minions.push_back(m);
+    }
+    waveInProgress = true;
+}
+
+void EnemyWaveManager::SpawnLoot(Vector2 spawnPos) {
+    LootDrop drop;
+    drop.pos = spawnPos;
+    drop.active = true;
+
+    int roll = GetRandomValue(1, 100);
+    Item lootItem;
+    
+    if (roll > 90) {
+        strncpy(lootItem.name, "Dragonfire Blade", sizeof(lootItem.name));
+        lootItem.type = ITEM_WEAPON;
+        lootItem.rarity = RARITY_LEGENDARY;
+        lootItem.bonusAttack = 35;
+        lootItem.bonusDefense = 5;
+        lootItem.bonusHealth = 50;
+        lootItem.color = GOLD;
+    } else if (roll > 70) {
+        strncpy(lootItem.name, "Shadow Gauntlets", sizeof(lootItem.name));
+        lootItem.type = ITEM_ARMOR;
+        lootItem.rarity = RARITY_EPIC;
+        lootItem.bonusAttack = 15;
+        lootItem.bonusDefense = 12;
+        lootItem.bonusHealth = 30;
+        lootItem.color = PURPLE;
+    } else if (roll > 40) {
+        strncpy(lootItem.name, "Steel Cuirass", sizeof(lootItem.name));
+        lootItem.type = ITEM_ARMOR;
+        lootItem.rarity = RARITY_RARE;
+        lootItem.bonusAttack = 5;
+        lootItem.bonusDefense = 15;
+        lootItem.bonusHealth = 20;
+        lootItem.color = SKYBLUE;
+    } else {
+        strncpy(lootItem.name, "Iron Dagger", sizeof(lootItem.name));
+        lootItem.type = ITEM_WEAPON;
+        lootItem.rarity = RARITY_COMMON;
+        lootItem.bonusAttack = 10;
+        lootItem.bonusDefense = 0;
+        lootItem.bonusHealth = 0;
+        lootItem.color = LIGHTGRAY;
+    }
+
+    drop.item = lootItem;
+    groundLoot.push_back(drop);
+}
+
+void EnemyWaveManager::Update(float dt, Player& player, ParticleEngine& particles) {
+    int activeCount = 0;
+
+    // 1. Minion AI & Collision Logic
+    for (auto& m : minions) {
+        if (!m.active) continue;
+        activeCount++;
+
+        // Chase player
+        Vector2 dir = Vector2Normalize(Vector2Subtract(player.pos, m.pos));
+        m.pos = Vector2Add(m.pos, Vector2Scale(dir, m.speed * dt));
+
+        // Damage player on contact (unless rolling/invulnerable)
+        if (Vector2Distance(m.pos, player.pos) < 25.0f && !player.isInvulnerable) {
+            float actualDmg = fmaxf(2.0f, m.damage - player.totalDefense);
+            player.health -= actualDmg * dt;
+        }
+
+        // Fireball vs Minion Collisions
+        for (auto& spell : player.activeSpells) {
+            if (spell.active && CheckCollisionCircles(spell.pos, spell.radius, m.pos, 15.0f)) {
+                m.hp -= spell.damage;
+                spell.active = false;
+                particles.Emit(m.pos, RED, 10, 50.0f, 150.0f);
+
+                if (m.hp <= 0.0f) {
+                    m.active = false;
+                    particles.Emit(m.pos, DARKGRAY, 20, 80.0f, 200.0f);
+                    if (GetRandomValue(1, 100) <= 60) SpawnLoot(m.pos); // 60% drop chance
+                }
+            }
+        }
+    }
+
+    // 2. Wave Completion Check
+    if (activeCount == 0 && waveInProgress) {
+        waveInProgress = false;
+        player.skillPoints += 2; // Reward 2 skill points per wave completed!
+    }
+
+    // 3. Ground Loot Floating & Pickup System
+    for (auto& drop : groundLoot) {
+        if (!drop.active) continue;
+        drop.floatTimer += dt;
+
+        // Player pickup collision
+        if (Vector2Distance(player.pos, drop.pos) <= drop.pickupRadius) {
+            for (int i = 0; i < 16; i++) {
+                if (!player.slotOccupied[i]) {
+                    player.inventory[i] = drop.item;
+                    player.slotOccupied[i] = true;
+                    player.RecalculateStats();
+                    drop.active = false;
+                    particles.Emit(player.pos, drop.item.color, 15, 60.0f, 180.0f);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void EnemyWaveManager::Draw() {
+    // Render Ground Loot Drops with Floating Motion
+    for (const auto& drop : groundLoot) {
+        if (!drop.active) continue;
+        float offsetY = sinf(drop.floatTimer * 4.0f) * 4.0f;
+        Vector2 renderPos = { drop.pos.x, drop.pos.y + offsetY };
+
+        DrawPoly(renderPos, 5, 8.0f, 0.0f, drop.item.color);
+        DrawCircleLines(renderPos.x, renderPos.y, 12.0f, drop.item.color);
+        DrawText(drop.item.name, renderPos.x - MeasureText(drop.item.name, 10) / 2, renderPos.y - 18, 10, drop.item.color);
+    }
+
+    // Render Minions
+    for (const auto& m : minions) {
+        if (!m.active) continue;
+        DrawCircleV(m.pos, 14.0f, DARKGRAY);
+        DrawCircleLines(m.pos.x, m.pos.y, 14.0f, RED);
+        
+        // Minion HP Bar
+        DrawRectangle(m.pos.x - 12, m.pos.y - 20, 24, 4, RED);
+        DrawRectangle(m.pos.x - 12, m.pos.y - 20, (int)((m.hp / m.maxHp) * 24), 4, GREEN);
+    }
+}
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+#include "LightEngine.h"
+#include "AudioManager.h"
+#include "EnemyWaveManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Wave Spawner & Loot Engine");
+    SetTargetFPS(60);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    AudioManager audio;
+    EnemyWaveManager waves;
+
+    audio.Init();
+    player.pos = world.playerSpawn;
+
+    std::string notification = "";
+    float notifTimer = 0.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // 1. Inputs & Controls
+        audio.Update();
+
+        if (IsKeyPressed(KEY_N) && !waves.waveInProgress) {
+            waves.StartWave(waves.currentWave + 1);
+            notification = TextFormat("WAVE %d STARTED!", waves.currentWave);
+            notifTimer = 2.5f;
+        }
+
+        if (IsKeyPressed(KEY_F5)) {
+            if (player.SaveToFile("savegame.dat", world.currentRoom)) {
+                notification = "GAME SAVED!";
+                notifTimer = 2.5f;
+            }
+        }
+        if (IsKeyPressed(KEY_F9)) {
+            if (player.LoadFromFile("savegame.dat", world.currentRoom)) {
+                world.GenerateProceduralDungeon(100 + world.currentRoom * 55);
+                player.pos = world.playerSpawn;
+                notification = "GAME LOADED!";
+                notifTimer = 2.5f;
+            }
+        }
+
+        if (IsKeyPressed(KEY_SPACE) && player.stamina >= 25.0f) audio.PlayDodgeSFX();
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && player.mana >= 30.0f) audio.PlayFireballSFX();
+
+        // 2. Engine Logic Updates
+        player.Update(dt, particles);
+        waves.Update(dt, player, particles);
+        
+        float dummyHP = player.health;
+        boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+        if (!player.isInvulnerable) player.health = dummyHP;
+
+        particles.Update(dt);
+
+        // Spell Hits Boss
+        for (auto& spell : player.activeSpells) {
+            if (spell.active && boss.hp > 0) {
+                if (CheckCollisionCircles(spell.pos, spell.radius, boss.pos, 35.0f)) {
+                    boss.hp -= spell.damage;
+                    spell.active = false;
+                    particles.Emit(spell.pos, GOLD, 25, 100.0f, 300.0f);
+                    audio.PlayHitSFX();
+                }
+            }
+        }
+
+        if (notifTimer > 0) notifTimer -= dt;
+
+        // 3. Base World Render
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        waves.Draw();
+        player.Draw();
+        particles.Draw();
+
+        // 4. Dynamic Lighting Pass
+        lighting.BeginLightPass();
+        lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+        lighting.DrawLight(world.exitPortal, 180.0f, PURPLE, 0.7f);
+
+        if (boss.hp > 0) lighting.DrawLight(boss.pos, 160.0f, RED, boss.enraged ? 0.9f : 0.5f);
+        
+        // Ground Loot Light Glows
+        for (const auto& drop : waves.groundLoot) {
+            if (drop.active) lighting.DrawLight(drop.pos, 70.0f, drop.item.color, 0.75f);
+        }
+
+        for (const auto& spell : player.activeSpells) {
+            if (spell.active) lighting.DrawLight(spell.pos, 140.0f, YELLOW, 0.95f);
+        }
+        
+        lighting.EndLightPass(GetColor(0x181822FF));
+
+        // 5. Interface Pass
+        player.DrawHUD();
+        player.DrawSkillTreeUI();
+        player.DrawInventoryUI();
+
+        // Wave HUD Bar
+        DrawRectangle(screenW - 220, 20, 200, 40, GetColor(0x000000A0));
+        DrawRectangleLines(screenW - 220, 20, 200, 40, GOLD);
+        DrawText(TextFormat("WAVE: %d", waves.currentWave), screenW - 200, 30, 16, GOLD);
+        DrawText(waves.waveInProgress ? "STATUS: ACTIVE" : "[N] NEXT WAVE", screenW - 110, 32, 10, waves.waveInProgress ? RED : GREEN);
+
+        if (notifTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 200, 20, 400, 35, GetColor(0x000000D0));
+            DrawRectangleLines(screenW / 2 - 200, 20, 400, 35, GOLD);
+            DrawText(notification.c_str(), screenW / 2 - MeasureText(notification.c_str(), 14) / 2, 30, 14, GOLD);
+        }
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [RMB] Fireball | [N] Start Wave | [E] Inventory | [K] Skill Tree", 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+};
