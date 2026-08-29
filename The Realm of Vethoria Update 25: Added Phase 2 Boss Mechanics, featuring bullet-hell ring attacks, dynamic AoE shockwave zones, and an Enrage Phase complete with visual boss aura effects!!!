@@ -1,0 +1,393 @@
+#pragma once
+#include "Common.h"
+#include "ParticleEngine.h"
+#include <vector>
+
+enum BossState {
+    BOSS_IDLE,
+    BOSS_CHASE,
+    BOSS_TELEGRAPH,
+    BOSS_ATTACK,
+    BOSS_BULLET_HELL,
+    BOSS_SHOCKWAVE_CHARGE,
+    BOSS_SHOCKWAVE_RELEASE,
+    BOSS_COOLDOWN
+};
+
+struct BossBullet {
+    Vector2 pos;
+    Vector2 vel;
+    float radius;
+    float damage;
+    float lifetime;
+    bool active = false;
+};
+
+class BossManager {
+public:
+    Vector2 pos = { 1000.0f, 360.0f };
+    float hp = 500.0f, maxHP = 500.0f;
+    float dmg = 25.0f;
+    bool enraged = false;
+    BossState state = BOSS_IDLE;
+    
+    float timer = 0.0f;
+    float phase2AttackTimer = 0.0f;
+    float telegraphProgress = 0.0f;
+    Vector2 attackTarget = { 0.0f, 0.0f };
+
+    // Phase 2 Dynamic Attacks
+    float shockwaveRadius = 0.0f;
+    float maxShockwaveRadius = 240.0f;
+    std::vector<BossBullet> bullets;
+
+    BossManager();
+    void TriggerBulletHellPattern();
+    void Update(float dt, Vector2 playerPos, float playerDef, float& playerHP, ParticleEngine& particles);
+    void Draw();
+    void DrawPhase2Effects();
+#include "BossManager.h"
+#include <cmath>
+
+BossManager::BossManager() {}
+
+void BossManager::TriggerBulletHellPattern() {
+    int bulletCount = 16;
+    float angleStep = (2.0f * PI) / (float)bulletCount;
+
+    for (int i = 0; i < bulletCount; i++) {
+        float angle = i * angleStep;
+        BossBullet b;
+        b.pos = pos;
+        b.vel = { cosf(angle) * 280.0f, sinf(angle) * 280.0f };
+        b.radius = 8.0f;
+        b.damage = 18.0f;
+        b.lifetime = 3.5f;
+        b.active = true;
+        bullets.push_back(b);
+    }
+}
+
+void BossManager::Update(float dt, Vector2 playerPos, float playerDef, float& playerHP, ParticleEngine& particles) {
+    if (hp <= 0) return;
+
+    timer += dt;
+
+    // 1. Phase 2 Enrage Check
+    if (!enraged && hp <= (maxHP * 0.5f)) {
+        enraged = true;
+        dmg = 35.0f;
+        particles.Emit(pos, MAROON, 50, 200.0f, 500.0f);
+    }
+
+    // 2. Update Boss Bullets & Collisions
+    for (auto& b : bullets) {
+        if (!b.active) continue;
+        b.lifetime -= dt;
+        b.pos = Vector2Add(b.pos, Vector2Scale(b.vel, dt));
+        particles.Emit(b.pos, PURPLE, 1, 10.0f, 30.0f);
+
+        // Check collision against player
+        if (CheckCollisionCircles(b.pos, b.radius, playerPos, 18.0f)) {
+            float finalDmg = fmaxf(3.0f, b.damage - playerDef);
+            playerHP -= finalDmg;
+            b.active = false;
+            particles.Emit(playerPos, VIOLET, 12, 60.0f, 150.0f);
+        }
+
+        if (b.lifetime <= 0.0f) b.active = false;
+    }
+
+    // 3. Boss State Machine
+    switch (state) {
+        case BOSS_IDLE:
+            if (timer >= 0.5f) { state = BOSS_CHASE; timer = 0.0f; }
+            break;
+
+        case BOSS_CHASE: {
+            Vector2 dir = Vector2Normalize(Vector2Subtract(playerPos, pos));
+            float currentSpeed = enraged ? 180.0f : 110.0f;
+            pos = Vector2Add(pos, Vector2Scale(dir, currentSpeed * dt));
+
+            if (enraged) {
+                phase2AttackTimer += dt;
+                // Alternate Phase 2 attacks
+                if (phase2AttackTimer >= 4.0f) {
+                    phase2AttackTimer = 0.0f;
+                    if (GetRandomValue(0, 1) == 0) {
+                        state = BOSS_BULLET_HELL;
+                    } else {
+                        state = BOSS_SHOCKWAVE_CHARGE;
+                    }
+                    timer = 0.0f;
+                    break;
+                }
+            }
+
+            if (Vector2Distance(pos, playerPos) < 140.0f || timer > 3.0f) {
+                state = BOSS_TELEGRAPH;
+                timer = 0.0f;
+                attackTarget = playerPos;
+            }
+        } break;
+
+        case BOSS_TELEGRAPH:
+            telegraphProgress = timer / (enraged ? 0.5f : 1.0f);
+            if (timer >= (enraged ? 0.5f : 1.0f)) {
+                state = BOSS_ATTACK;
+                timer = 0.0f;
+            }
+            break;
+
+        case BOSS_ATTACK:
+            particles.Emit(attackTarget, RED, 35, 150.0f, 400.0f);
+            if (Vector2Distance(playerPos, attackTarget) <= 120.0f) {
+                float finalDmg = fmaxf(5.0f, dmg - playerDef);
+                playerHP -= finalDmg;
+            }
+            state = BOSS_COOLDOWN;
+            timer = 0.0f;
+            break;
+
+        case BOSS_BULLET_HELL:
+            TriggerBulletHellPattern();
+            particles.Emit(pos, PURPLE, 40, 120.0f, 350.0f);
+            state = BOSS_COOLDOWN;
+            timer = 0.0f;
+            break;
+
+        case BOSS_SHOCKWAVE_CHARGE:
+            telegraphProgress = timer / 1.2f;
+            if (timer >= 1.2f) {
+                state = BOSS_SHOCKWAVE_RELEASE;
+                shockwaveRadius = 10.0f;
+                timer = 0.0f;
+            }
+            break;
+
+        case BOSS_SHOCKWAVE_RELEASE:
+            shockwaveRadius += 400.0f * dt;
+            particles.Emit(pos, ORANGE, 4, shockwaveRadius * 0.8f, shockwaveRadius);
+
+            // Ring distance hit detection
+            {
+                float distToPlayer = Vector2Distance(pos, playerPos);
+                if (fabsf(distToPlayer - shockwaveRadius) < 20.0f) {
+                    float finalDmg = fmaxf(8.0f, 40.0f - playerDef);
+                    playerHP -= finalDmg * dt * 5.0f; // Rapid hit inside expanding ring
+                }
+            }
+
+            if (shockwaveRadius >= maxShockwaveRadius) {
+                state = BOSS_COOLDOWN;
+                timer = 0.0f;
+            }
+            break;
+
+        case BOSS_COOLDOWN:
+            if (timer >= (enraged ? 0.7f : 1.2f)) {
+                state = BOSS_CHASE;
+                timer = 0.0f;
+            }
+            break;
+    }
+}
+
+void BossManager::DrawPhase2Effects() {
+    // Render Active Bullets
+    for (const auto& b : bullets) {
+        if (!b.active) continue;
+        DrawCircleV(b.pos, b.radius, PURPLE);
+        DrawCircleV(b.pos, b.radius * 0.5f, RAYWHITE);
+    }
+
+    // Telegraphing Shockwave Charge
+    if (state == BOSS_SHOCKWAVE_CHARGE) {
+        DrawCircleSectorLines(pos, maxShockwaveRadius, 0, 360, 36, Fade(RED, 0.3f + (telegraphProgress * 0.5f)));
+        DrawCircleLines(pos.x, pos.y, maxShockwaveRadius * telegraphProgress, RED);
+    }
+
+    // Expanding Shockwave Ring
+    if (state == BOSS_SHOCKWAVE_RELEASE) {
+        DrawCircleLines(pos.x, pos.y, shockwaveRadius, ORANGE);
+        DrawCircleLines(pos.x, pos.y, shockwaveRadius - 5.0f, RED);
+        DrawCircleLines(pos.x, pos.y, shockwaveRadius + 5.0f, YELLOW);
+    }
+}
+
+void BossManager::Draw() {
+    if (hp <= 0) return;
+
+    // Draw Dynamic Phase 2 Visual Overlay
+    DrawPhase2Effects();
+
+    // Enraged Boss Visual Aura
+    if (enraged) {
+        DrawCircleV(pos, 42.0f, Fade(MAROON, 0.4f));
+        DrawCircleLines(pos.x, pos.y, 42.0f, RED);
+    }
+
+    // Base Boss Model
+    DrawCircleV(pos, 35.0f, enraged ? RED : DARKPURPLE);
+    DrawCircleLines(pos.x, pos.y, 35.0f, RAYWHITE);
+
+    // Telegraphing Indicator (Melee Slash)
+    if (state == BOSS_TELEGRAPH) {
+        DrawCircleV(attackTarget, 120.0f * telegraphProgress, Fade(RED, 0.3f));
+        DrawCircleLines(attackTarget.x, attackTarget.y, 120.0f, RED);
+    }
+
+    // Boss Name & Health Bar Overlay
+    DrawRectangle(pos.x - 40, pos.y - 50, 80, 8, GetColor(0x221111FF));
+    DrawRectangle(pos.x - 40, pos.y - 50, (int)((hp / maxHP) * 80), 8, enraged ? RED : VIOLET);
+    DrawRectangleLines(pos.x - 40, pos.y - 50, 80, 8, RAYWHITE);
+    DrawText(enraged ? "LORD VETHOR (ENRAGED)" : "LORD VETHOR", pos.x - 55, pos.y - 66, 10, enraged ? RED : GOLD);
+}
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+#include "LightEngine.h"
+#include "AudioManager.h"
+#include "EnemyWaveManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Phase 2 Boss Engine");
+    SetTargetFPS(60);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    AudioManager audio;
+    EnemyWaveManager waves;
+
+    audio.Init();
+    player.pos = world.playerSpawn;
+
+    std::string notification = "";
+    float notifTimer = 0.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // 1. Core Controls
+        audio.Update();
+
+        if (IsKeyPressed(KEY_N) && !waves.waveInProgress) {
+            waves.StartWave(waves.currentWave + 1);
+            notification = TextFormat("WAVE %d STARTED!", waves.currentWave);
+            notifTimer = 2.5f;
+        }
+
+        if (IsKeyPressed(KEY_F5)) {
+            if (player.SaveToFile("savegame.dat", world.currentRoom)) {
+                notification = "GAME SAVED!";
+                notifTimer = 2.5f;
+            }
+        }
+        if (IsKeyPressed(KEY_F9)) {
+            if (player.LoadFromFile("savegame.dat", world.currentRoom)) {
+                world.GenerateProceduralDungeon(100 + world.currentRoom * 55);
+                player.pos = world.playerSpawn;
+                notification = "GAME LOADED!";
+                notifTimer = 2.5f;
+            }
+        }
+
+        if (IsKeyPressed(KEY_SPACE) && player.stamina >= 25.0f) audio.PlayDodgeSFX();
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && player.mana >= 30.0f) audio.PlayFireballSFX();
+
+        // 2. Systems Update
+        player.Update(dt, particles);
+        waves.Update(dt, player, particles);
+        
+        float dummyHP = player.health;
+        boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+        
+        // Apply damage if player is not currently in Dodge Roll i-frames
+        if (!player.isInvulnerable) player.health = dummyHP;
+
+        particles.Update(dt);
+
+        // Spell Hits vs Boss
+        for (auto& spell : player.activeSpells) {
+            if (spell.active && boss.hp > 0) {
+                if (CheckCollisionCircles(spell.pos, spell.radius, boss.pos, 35.0f)) {
+                    boss.hp -= spell.damage;
+                    spell.active = false;
+                    particles.Emit(spell.pos, GOLD, 25, 100.0f, 300.0f);
+                    audio.PlayHitSFX();
+                }
+            }
+        }
+
+        if (notifTimer > 0) notifTimer -= dt;
+
+        // 3. Render Pass
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        waves.Draw();
+        player.Draw();
+        particles.Draw();
+
+        // 4. Dynamic Lighting Pass (Including Phase 2 Spells)
+        lighting.BeginLightPass();
+        lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+        lighting.DrawLight(world.exitPortal, 180.0f, PURPLE, 0.7f);
+
+        // Enraged Boss & Shockwave Lighting
+        if (boss.hp > 0) {
+            lighting.DrawLight(boss.pos, boss.enraged ? 220.0f : 160.0f, RED, boss.enraged ? 0.95f : 0.5f);
+            if (boss.state == BOSS_SHOCKWAVE_RELEASE) {
+                lighting.DrawLight(boss.pos, boss.shockwaveRadius + 40.0f, ORANGE, 0.8f);
+            }
+        }
+        
+        // Bullet-Hell Projectile Lights
+        for (const auto& b : boss.bullets) {
+            if (b.active) lighting.DrawLight(b.pos, 60.0f, PURPLE, 0.7f);
+        }
+
+        // Player Fireball Lights
+        for (const auto& spell : player.activeSpells) {
+            if (spell.active) lighting.DrawLight(spell.pos, 140.0f, YELLOW, 0.95f);
+        }
+        
+        lighting.EndLightPass(GetColor(0x181822FF));
+
+        // 5. Interface Overlays
+        player.DrawHUD();
+        player.DrawSkillTreeUI();
+        player.DrawInventoryUI();
+
+        // Wave Info Bar
+        DrawRectangle(screenW - 220, 20, 200, 40, GetColor(0x000000A0));
+        DrawRectangleLines(screenW - 220, 20, 200, 40, GOLD);
+        DrawText(TextFormat("WAVE: %d", waves.currentWave), screenW - 200, 30, 16, GOLD);
+        DrawText(waves.waveInProgress ? "STATUS: ACTIVE" : "[N] NEXT WAVE", screenW - 110, 32, 10, waves.waveInProgress ? RED : GREEN);
+
+        if (notifTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 200, 20, 400, 35, GetColor(0x000000D0));
+            DrawRectangleLines(screenW / 2 - 200, 20, 400, 35, GOLD);
+            DrawText(notification.c_str(), screenW / 2 - MeasureText(notification.c_str(), 14) / 2, 30, 14, GOLD);
+        }
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [SPACE] Roll | [RMB] Fireball | [Phase 2 Enrage & Bullet-Hell Active]", 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+
+};
