@@ -1,0 +1,355 @@
+#pragma once
+#include "raylib.h"
+#include <unordered_map>
+#include <string>
+
+class TextureManager {
+private:
+    std::unordered_map<std::string, Texture2D> textures;
+    Texture2D fallbackTexture;
+    bool fallbackCreated = false;
+
+    void CreateFallbackTexture();
+
+public:
+    TextureManager();
+    ~TextureManager();
+
+    void LoadAll();
+    bool LoadTextureAuto(const std::string& key, const std::string& filepath);
+    Texture2D Get(const std::string& key);
+    void UnloadAll();
+};
+#include "TextureManager.h"
+#include <iostream>
+
+TextureManager::TextureManager() {}
+
+TextureManager::~TextureManager() {
+    UnloadAll();
+}
+
+void TextureManager::CreateFallbackTexture() {
+    if (fallbackCreated) return;
+    
+    // Generate a 32x32 pink/black checkerboard pattern for missing textures
+    Image img = GenImageChecked(32, 32, 8, 8, PINK, BLACK);
+    fallbackTexture = LoadTextureFromImage(img);
+    UnloadImage(img);
+    fallbackCreated = true;
+}
+
+void TextureManager::LoadAll() {
+    CreateFallbackTexture();
+
+    // Preload game texture assets
+    LoadTextureAuto("player", "assets/player.png");
+    LoadTextureAuto("boss", "assets/boss.png");
+    LoadTextureAuto("minion", "assets/skeleton.png");
+    LoadTextureAuto("wall", "assets/wall.png");
+    LoadTextureAuto("floor", "assets/floor.png");
+    LoadTextureAuto("portal", "assets/portal.png");
+}
+
+bool TextureManager::LoadTextureAuto(const std::string& key, const std::string& filepath) {
+    if (FileExists(filepath.c_str())) {
+        Texture2D tex = LoadTexture(filepath.c_str());
+        if (tex.id > 0) {
+            textures[key] = tex;
+            return true;
+        }
+    }
+    // Store fallback texture if loading failed or file missing
+    textures[key] = fallbackTexture;
+    return false;
+}
+
+Texture2D TextureManager::Get(const std::string& key) {
+    auto it = textures.find(key);
+    if (it != textures.end()) {
+        return it->second;
+    }
+    return fallbackTexture;
+}
+
+void TextureManager::UnloadAll() {
+    for (auto& pair : textures) {
+        if (pair.second.id != fallbackTexture.id && pair.second.id > 0) {
+            UnloadTexture(pair.second);
+        }
+    }
+    textures.clear();
+
+    if (fallbackCreated && fallbackTexture.id > 0) {
+        UnloadTexture(fallbackTexture);
+        fallbackCreated = false;
+    }
+}
+#pragma me
+#pragma once
+#include "raylib.h"
+#include <unordered_map>
+#include <string>
+
+class SoundManager {
+private:
+    std::unordered_map<std::string, Sound> sounds;
+    std::unordered_map<std::string, Music> musicStreams;
+    bool audioReady = false;
+    std::string currentBGM = "";
+
+public:
+    SoundManager();
+    ~SoundManager();
+
+    void Init();
+    void LoadAll();
+    void Update();
+    
+    void PlaySFX(const std::string& key, float pitch = 1.0f, float volume = 1.0f);
+    void PlayBGM(const std::string& key, float volume = 0.5f);
+    void StopBGM();
+    void UnloadAll();
+};
+#include "SoundManager.h"
+#include <iostream>
+
+SoundManager::SoundManager() {}
+
+SoundManager::~SoundManager() {
+    UnloadAll();
+}
+
+void SoundManager::Init() {
+    InitAudioDevice();
+    if (IsAudioDeviceReady()) {
+        audioReady = true;
+        LoadAll();
+    }
+}
+
+void SoundManager::LoadAll() {
+    if (!audioReady) return;
+
+    // Load Sound Effects
+    if (FileExists("assets/sfx_fireball.wav")) sounds["fireball"] = LoadSound("assets/sfx_fireball.wav");
+    if (FileExists("assets/sfx_dodge.wav")) sounds["dodge"] = LoadSound("assets/sfx_dodge.wav");
+    if (FileExists("assets/sfx_hit.wav")) sounds["hit"] = LoadSound("assets/sfx_hit.wav");
+    if (FileExists("assets/sfx_pickup.wav")) sounds["pickup"] = LoadSound("assets/sfx_pickup.wav");
+
+    // Load Background Music Streams
+    if (FileExists("assets/bgm_dungeon.mp3")) musicStreams["dungeon"] = LoadMusicStream("assets/bgm_dungeon.mp3");
+    if (FileExists("assets/bgm_boss.mp3")) musicStreams["boss"] = LoadMusicStream("assets/bgm_boss.mp3");
+}
+
+void SoundManager::Update() {
+    if (!audioReady || currentBGM.empty()) return;
+
+    auto it = musicStreams.find(currentBGM);
+    if (it != musicStreams.end()) {
+        UpdateMusicStream(it->second);
+    }
+}
+
+void SoundManager::PlaySFX(const std::string& key, float pitch, float volume) {
+    if (!audioReady) return;
+
+    auto it = sounds.find(key);
+    if (it != sounds.end() && IsSoundReady(it->second)) {
+        SetSoundPitch(it->second, pitch);
+        SetSoundVolume(it->second, volume);
+        PlaySound(it->second);
+    }
+}
+
+void SoundManager::PlayBGM(const std::string& key, float volume) {
+    if (!audioReady) return;
+
+    if (currentBGM == key) return; // Already playing
+
+    StopBGM();
+
+    auto it = musicStreams.find(key);
+    if (it != musicStreams.end() && IsMusicReady(it->second)) {
+        currentBGM = key;
+        SetMusicVolume(it->second, volume);
+        PlayMusicStream(it->second);
+    }
+}
+
+void SoundManager::StopBGM() {
+    if (!audioReady || currentBGM.empty()) return;
+
+    auto it = musicStreams.find(currentBGM);
+    if (it != musicStreams.end()) {
+        StopMusicStream(it->second);
+    }
+    currentBGM = "";
+}
+
+void SoundManager::UnloadAll() {
+    if (!audioReady) return;
+
+    for (auto& pair : sounds) {
+        if (IsSoundReady(pair.second)) UnloadSound(pair.second);
+    }
+    sounds.clear();
+
+    for (auto& pair : musicStreams) {
+        if (IsMusicReady(pair.second)) UnloadMusicStream(pair.second);
+    }
+    musicStreams.clear();
+
+    CloseAudioDevice();
+    audioReady = false;
+}
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Preloader & Resource Engine");
+    SetTargetFPS(60);
+
+    // 1. Initialize Asset Preloaders
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+    soundMgr.PlayBGM("dungeon", 0.4f);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+
+    player.pos = world.playerSpawn;
+
+    std::string notification = "ALL ASSETS PRELOADED SUCCESSFULLY";
+    float notifTimer = 3.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Update BGM stream
+        soundMgr.Update();
+
+        // Core Input Actions with Sound Effects
+        if (IsKeyPressed(KEY_SPACE) && player.stamina >= 25.0f) {
+            soundMgr.PlaySFX("dodge", 1.0f, 0.8f);
+        }
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && player.mana >= 30.0f) {
+            soundMgr.PlaySFX("fireball", 1.1f, 0.9f);
+        }
+
+        if (IsKeyPressed(KEY_N) && !waves.waveInProgress) {
+            waves.StartWave(waves.currentWave + 1);
+            notification = TextFormat("WAVE %d STARTED!", waves.currentWave);
+            notifTimer = 2.5f;
+
+            if (waves.currentWave % 5 == 0) {
+                soundMgr.PlayBGM("boss", 0.5f);
+            }
+        }
+
+        // Save & Load Systems
+        if (IsKeyPressed(KEY_F5)) {
+            if (player.SaveToFile("savegame.dat", world.currentRoom)) {
+                notification = "GAME SAVED!";
+                notifTimer = 2.5f;
+            }
+        }
+        if (IsKeyPressed(KEY_F9)) {
+            if (player.LoadFromFile("savegame.dat", world.currentRoom)) {
+                world.GenerateProceduralDungeon(100 + world.currentRoom * 55);
+                player.pos = world.playerSpawn;
+                notification = "GAME LOADED!";
+                notifTimer = 2.5f;
+            }
+        }
+
+        // Game Logic Updates
+        player.Update(dt, particles);
+        waves.Update(dt, player, particles);
+
+        float dummyHP = player.health;
+        boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+        if (!player.isInvulnerable) player.health = dummyHP;
+
+        particles.Update(dt);
+
+        // Spell Hits & Hitsounds
+        for (auto& spell : player.activeSpells) {
+            if (spell.active && boss.hp > 0) {
+                if (CheckCollisionCircles(spell.pos, spell.radius, boss.pos, 35.0f)) {
+                    boss.hp -= spell.damage;
+                    spell.active = false;
+                    particles.Emit(spell.pos, GOLD, 25, 100.0f, 300.0f);
+                    soundMgr.PlaySFX("hit", (float)GetRandomValue(9, 11) * 0.1f, 0.8f);
+                }
+            }
+        }
+
+        if (notifTimer > 0) notifTimer -= dt;
+
+        // Base World Render
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        waves.Draw();
+        player.Draw();
+        particles.Draw();
+
+        // Dynamic Lighting Pass
+        lighting.BeginLightPass();
+        lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+        lighting.DrawLight(world.exitPortal, 180.0f, PURPLE, 0.7f);
+
+        if (boss.hp > 0) {
+            lighting.DrawLight(boss.pos, boss.enraged ? 220.0f : 160.0f, RED, boss.enraged ? 0.95f : 0.5f);
+        }
+
+        for (const auto& drop : waves.groundLoot) {
+            if (drop.active) lighting.DrawLight(drop.pos, 70.0f, drop.item.color, 0.75f);
+        }
+
+        for (const auto& spell : player.activeSpells) {
+            if (spell.active) lighting.DrawLight(spell.pos, 140.0f, YELLOW, 0.95f);
+        }
+
+        lighting.EndLightPass(GetColor(0x181822FF));
+
+        // UI & HUD Render
+        player.DrawHUD();
+        player.DrawSkillTreeUI();
+        player.DrawInventoryUI();
+
+        if (notifTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 200, 20, 400, 35, GetColor(0x000000D0));
+            DrawRectangleLines(screenW / 2 - 200, 20, 400, 35, GOLD);
+            DrawText(notification.c_str(), screenW / 2 - MeasureText(notification.c_str(), 14) / 2, 30, 14, GOLD);
+        }
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[Resource Management Active] Textures & Sounds Managed via RAII Loaders", 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+
