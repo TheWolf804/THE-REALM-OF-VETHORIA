@@ -1,0 +1,198 @@
+#pragma once
+#include <iostream>
+#include <string>
+#include <vector>
+
+struct TestResult {
+    std::string name;
+    bool passed;
+    std::string message;
+};
+
+class TestEngine {
+private:
+    std::vector<TestResult> results;
+    int passedCount = 0;
+    int failedCount = 0;
+
+public:
+    void AssertTrue(bool condition, const std::string& testName, const std::string& errorMsg = "") {
+        if (condition) {
+            results.push_back({ testName, true, "" });
+            passedCount++;
+        } else {
+            results.push_back({ testName, false, errorMsg.empty() ? "Condition failed" : errorMsg });
+            failedCount++;
+        }
+    }
+
+    void AssertFloatEquals(float actual, float expected, float epsilon, const std::string& testName) {
+        bool condition = (std::abs(actual - expected) <= epsilon);
+        std::string msg = "Expected: " + std::to_string(expected) + ", Got: " + std::to_string(actual);
+        AssertTrue(condition, testName, msg);
+    }
+
+    void AssertIntEquals(int actual, int expected, const std::string& testName) {
+        bool condition = (actual == expected);
+        std::string msg = "Expected: " + std::to_string(expected) + ", Got: " + std::to_string(actual);
+        AssertTrue(condition, testName, msg);
+    }
+
+    void PrintSummary() {
+        std::cout << "\n=======================================================\n";
+        std::cout << "                 VETHORIA UNIT TEST REPORT             \n";
+        std::cout << "=======================================================\n";
+
+        for (const auto& r : results) {
+            if (r.passed) {
+                std::cout << " [PASS] " << r.name << "\n";
+            } else {
+                std::cout << " [FAIL] " << r.name << " ---> " << r.message << "\n";
+            }
+        }
+
+        std::cout << "-------------------------------------------------------\n";
+        std::cout << " TOTAL: " << (passedCount + failedCount) 
+                  << " | PASSED: " << passedCount 
+                  << " | FAILED: " << failedCount << "\n";
+        std::cout << "=======================================================\n\n";
+    }
+
+    int GetFailedCount() const { return failedCount; }
+#include "TestEngine.h"
+#include "Common.h"
+#include "Player.h"
+#include "BossManager.h"
+#include <cstdio>
+#include <cstring>
+
+void TestLevelingSystem(TestEngine& runner) {
+    Player player;
+
+    // Test default initial stats
+    runner.AssertIntEquals(player.level, 1, "Leveling: Default Initial Level");
+    runner.AssertIntEquals(player.strPoints, 0, "Leveling: Default Initial Strength");
+    runner.AssertIntEquals(player.totalAttack, 28, "Leveling: Starter Sword Attack Stat"); // 20 base + 8 starter sword
+
+    // Allocate Strength Points
+    player.skillPoints = 3;
+    player.strPoints += 2;
+    player.skillPoints -= 2;
+    player.RecalculateStats();
+
+    // Verification: Attack formula = 20 + (STR * 4) + Weapon = 20 + 8 + 8 = 36
+    runner.AssertIntEquals(player.totalAttack, 36, "Leveling: Strength Stat Scaling Attack Formula");
+    runner.AssertFloatEquals(player.maxHealth, 180.0f, 0.01f, "Leveling: Strength Stat Scaling Max HP");
+
+    // Allocate Agility & Intelligence
+    player.agiPoints += 3;
+    player.intPoints += 5;
+    player.RecalculateStats();
+
+    runner.AssertIntEquals(player.totalDefense, 11, "Leveling: Agility Defense Formula"); // 5 base + (3 * 2) = 11
+    runner.AssertFloatEquals(player.maxMana, 225.0f, 0.01f, "Leveling: Intelligence Mana Formula"); // 100 base + (5 * 25) = 225
+}
+
+void TestCombatSystem(TestEngine& runner) {
+    Player player;
+    BossManager boss;
+    ParticleEngine particles;
+
+    boss.hp = 100.0f;
+    boss.maxHP = 100.0f;
+    player.intPoints = 5; // Spell damage bonus = 35 + (5 * 8) = 75
+
+    // Fireball Spell Initialization
+    SpellProjectile spell;
+    spell.pos = { 100.0f, 100.0f };
+    spell.radius = 10.0f;
+    spell.damage = 35.0f + (player.intPoints * 8.0f);
+    spell.active = true;
+
+    boss.pos = { 105.0f, 105.0f };
+
+    // Collision Check & Hit Calculation
+    if (CheckCollisionCircles(spell.pos, spell.radius, boss.pos, 35.0f)) {
+        boss.hp -= spell.damage;
+        spell.active = false;
+    }
+
+    runner.AssertTrue(!spell.active, "Combat: Spell Deactivates On Collision");
+    runner.AssertFloatEquals(boss.hp, 25.0f, 0.01f, "Combat: Boss Health Subtraction Formula");
+
+    // Test Dodge Roll Invulnerability
+    player.stamina = 100.0f;
+    player.lastMoveDir = { 1.0f, 0.0f };
+    player.PerformDodgeRoll();
+
+    runner.AssertTrue(player.isRolling, "Combat: Dodge Roll State Activation");
+    runner.AssertTrue(player.isInvulnerable, "Combat: Dodge Roll Invulnerability Active");
+    runner.AssertFloatEquals(player.stamina, 75.0f, 0.01f, "Combat: Dodge Roll Stamina Deduction");
+}
+
+void TestSaveLoadSerialization(TestEngine& runner) {
+    const std::string testSaveFile = "unittest_save.dat";
+
+    // 1. Prepare Original Player Data State
+    Player originalPlayer;
+    originalPlayer.level = 7;
+    originalPlayer.skillPoints = 4;
+    originalPlayer.strPoints = 8;
+    originalPlayer.agiPoints = 3;
+    originalPlayer.intPoints = 5;
+    originalPlayer.health = 210.0f;
+    originalPlayer.maxHealth = 270.0f;
+
+    Item legendaryBlade;
+    strncpy(legendaryBlade.name, "Test Sunblade", sizeof(legendaryBlade.name));
+    legendaryBlade.type = ITEM_WEAPON;
+    legendaryBlade.rarity = RARITY_LEGENDARY;
+    legendaryBlade.bonusAttack = 50;
+    legendaryBlade.bonusDefense = 10;
+    legendaryBlade.bonusHealth = 100;
+    legendaryBlade.color = GOLD;
+
+    originalPlayer.inventory[0] = legendaryBlade;
+    originalPlayer.slotOccupied[0] = true;
+
+    int originalRoom = 4;
+
+    // 2. Serialize to Disk
+    bool saveSuccess = originalPlayer.SaveToFile(testSaveFile, originalRoom);
+    runner.AssertTrue(saveSuccess, "Serialization: File Binary Save");
+
+    // 3. Deserialize into Fresh Instance
+    Player loadedPlayer;
+    int loadedRoom = 0;
+    bool loadSuccess = loadedPlayer.LoadFromFile(testSaveFile, loadedRoom);
+    runner.AssertTrue(loadSuccess, "Serialization: File Binary Load");
+
+    // 4. Verify Data Integrity
+    runner.AssertIntEquals(loadedPlayer.level, originalPlayer.level, "Serialization: Level Match");
+    runner.AssertIntEquals(loadedPlayer.strPoints, originalPlayer.strPoints, "Serialization: STR Points Match");
+    runner.AssertIntEquals(loadedRoom, originalRoom, "Serialization: Dungeon Room Match");
+    runner.AssertFloatEquals(loadedPlayer.health, originalPlayer.health, 0.01f, "Serialization: Health Value Match");
+
+    runner.AssertTrue(loadedPlayer.slotOccupied[0], "Serialization: Inventory Slot Occupied Match");
+    runner.AssertIntEquals(std::strcmp(loadedPlayer.inventory[0].name, "Test Sunblade"), 0, "Serialization: Item Name String Match");
+    runner.AssertIntEquals(loadedPlayer.inventory[0].bonusAttack, 50, "Serialization: Item Bonus Attack Match");
+
+    // Clean up temporary unit test binary file
+    std::remove(testSaveFile.c_str());
+}
+
+int main() {
+    TestEngine runner;
+
+    std::cout << "Running Vethoria Engine Unit Tests...\n";
+
+    TestLevelingSystem(runner);
+    TestCombatSystem(runner);
+    TestSaveLoadSerialization(runner);
+
+    runner.PrintSummary();
+
+    return runner.GetFailedCount() == 0 ? 0 : 1;
+}
+
+};
