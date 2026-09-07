@@ -1,0 +1,280 @@
+#pragma once
+
+enum GameState {
+    STATE_GAMEPLAY,
+    STATE_GAME_OVER,
+    STATE_VICTORY
+};
+
+struct DeathSequence {
+    float deathTimer = 0.0f;
+    float fadeAlpha = 0.0f;
+    bool initialExplosionTriggered = false;
+
+    void Reset() {
+        deathTimer = 0.0f;
+        fadeAlpha = 0.0f;
+        initialExplosionTriggered = false;
+    }
+};
+// Add to class Player inside include/Player.h:
+void ResetState(Vector2 spawnPosition) {
+    pos = spawnPosition;
+    health = maxHealth;
+    mana = maxMana;
+    stamina = maxStamina;
+    isRolling = false;
+    isInvulnerable = false;
+    rollTimer = 0.0f;
+    activeSpells.clear();
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "GameState.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Game Over & Level Restart Pipeline");
+    SetTargetFPS(60);
+
+    // Resource Subsystems
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+    soundMgr.PlayBGM("dungeon", 0.4f);
+
+    // Core Game Systems
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+
+    GameState currentState = STATE_GAMEPLAY;
+    DeathSequence deathSeq;
+
+    player.pos = world.playerSpawn;
+
+    std::string notification = "ENTERED DUNGEON FLOOR 1";
+    float notifTimer = 2.5f;
+
+    // Helper lambda for full level restart
+    auto RestartGame = [&](bool loadSave = false) {
+        if (loadSave) {
+            if (player.LoadFromFile("savegame.dat", world.currentRoom)) {
+                world.GenerateProceduralDungeon(100 + world.currentRoom * 55);
+                notification = "GAME LOADED FROM SAVE!";
+            } else {
+                world.currentRoom = 0;
+                world.GenerateProceduralDungeon(12345);
+                player.ResetState(world.playerSpawn);
+                notification = "NO SAVE FOUND - RESTARTED FLOOR 1";
+            }
+        } else {
+            world.currentRoom = 0;
+            world.GenerateProceduralDungeon(12345);
+            player.ResetState(world.playerSpawn);
+            notification = "GAME RESTARTED!";
+        }
+
+        boss = BossManager(); // Re-initialize boss
+        waves = EnemyWaveManager(); // Re-initialize waves
+        particles = ParticleEngine();
+        deathSeq.Reset();
+        currentState = STATE_GAMEPLAY;
+        soundMgr.PlayBGM("dungeon", 0.4f);
+        notifTimer = 3.0f;
+    };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        soundMgr.Update();
+
+        // -----------------------------------------------------------------
+        // 1. GAMEPLAY STATE UPDATE
+        // -----------------------------------------------------------------
+        if (currentState == STATE_GAMEPLAY) {
+            // Player Death Trigger Check
+            if (player.health <= 0.0f) {
+                player.health = 0.0f;
+                currentState = STATE_GAME_OVER;
+                soundMgr.StopBGM();
+                soundMgr.PlaySFX("hit", 0.5f, 1.0f); // Low death sound
+            }
+
+            // Controls
+            if (IsKeyPressed(KEY_SPACE) && player.stamina >= 25.0f) {
+                soundMgr.PlaySFX("dodge", 1.0f, 0.8f);
+            }
+            if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && player.mana >= 30.0f) {
+                soundMgr.PlaySFX("fireball", 1.1f, 0.9f);
+            }
+
+            if (IsKeyPressed(KEY_N) && !waves.waveInProgress) {
+                waves.StartWave(waves.currentWave + 1);
+                notification = TextFormat("WAVE %d STARTED!", waves.currentWave);
+                notifTimer = 2.5f;
+            }
+
+            if (IsKeyPressed(KEY_F5)) {
+                if (player.SaveToFile("savegame.dat", world.currentRoom)) {
+                    notification = "GAME SAVED!";
+                    notifTimer = 2.5f;
+                }
+            }
+            if (IsKeyPressed(KEY_F9)) {
+                RestartGame(true);
+            }
+
+            // Engine Updates
+            player.Update(dt, particles);
+            waves.Update(dt, player, particles);
+
+            float dummyHP = player.health;
+            boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+            if (!player.isInvulnerable) player.health = dummyHP;
+
+            // Spell Hits vs Boss
+            for (auto& spell : player.activeSpells) {
+                if (spell.active && boss.hp > 0) {
+                    if (CheckCollisionCircles(spell.pos, spell.radius, boss.pos, 35.0f)) {
+                        boss.hp -= spell.damage;
+                        spell.active = false;
+                        particles.Emit(spell.pos, GOLD, 25, 100.0f, 300.0f);
+                        soundMgr.PlaySFX("hit", (float)GetRandomValue(9, 11) * 0.1f, 0.8f);
+                    }
+                }
+            }
+        }
+        // -----------------------------------------------------------------
+        // 2. GAME OVER STATE UPDATE
+        // -----------------------------------------------------------------
+        else if (currentState == STATE_GAME_OVER) {
+            deathSeq.deathTimer += dt;
+            deathSeq.fadeAlpha = fminf(1.0f, deathSeq.deathTimer * 0.5f); // 2-second fade transition
+
+            // Initial Death Explosion Effect
+            if (!deathSeq.initialExplosionTriggered) {
+                particles.Emit(player.pos, RED, 60, 100.0f, 400.0f);
+                particles.Emit(player.pos, DARKGRAY, 40, 50.0f, 250.0f);
+                particles.Emit(player.pos, GOLD, 30, 80.0f, 350.0f);
+                deathSeq.initialExplosionTriggered = true;
+            }
+
+            // Restart Hotkeys
+            if (IsKeyPressed(KEY_R)) {
+                RestartGame(false);
+            }
+            if (IsKeyPressed(KEY_F9)) {
+                RestartGame(true);
+            }
+        }
+
+        particles.Update(dt);
+        if (notifTimer > 0) notifTimer -= dt;
+
+        // -----------------------------------------------------------------
+        // 3. RENDER PASS
+        // -----------------------------------------------------------------
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        waves.Draw();
+        
+        if (currentState == STATE_GAMEPLAY) {
+            player.Draw();
+        }
+        
+        particles.Draw();
+
+        // Dynamic Lighting Pass
+        lighting.BeginLightPass();
+        if (currentState == STATE_GAMEPLAY) {
+            lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+        } else {
+            // Fading death ambient light
+            lighting.DrawLight(player.pos, 120.0f * (1.0f - deathSeq.fadeAlpha), RED, 0.6f);
+        }
+
+        lighting.DrawLight(world.exitPortal, 180.0f, PURPLE, 0.7f);
+
+        if (boss.hp > 0) {
+            lighting.DrawLight(boss.pos, boss.enraged ? 220.0f : 160.0f, RED, boss.enraged ? 0.95f : 0.5f);
+        }
+
+        lighting.EndLightPass(GetColor(0x181822FF));
+
+        // UI & HUD
+        if (currentState == STATE_GAMEPLAY) {
+            player.DrawHUD();
+            player.DrawSkillTreeUI();
+            player.DrawInventoryUI();
+        }
+
+        // Notification Overlay
+        if (notifTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 200, 20, 400, 35, GetColor(0x000000D0));
+            DrawRectangleLines(screenW / 2 - 200, 20, 400, 35, GOLD);
+            DrawText(notification.c_str(), screenW / 2 - MeasureText(notification.c_str(), 14) / 2, 30, 14, GOLD);
+        }
+
+        // -----------------------------------------------------------------
+        // 4. GAME OVER OVERLAY
+        // -----------------------------------------------------------------
+        if (currentState == STATE_GAME_OVER) {
+            // Dark vignette overlay with alpha fade
+            unsigned char alpha = (unsigned char)(deathSeq.fadeAlpha * 210.0f);
+            DrawRectangle(0, 0, screenW, screenH, (Color){ 10, 5, 8, alpha });
+
+            if (deathSeq.fadeAlpha >= 0.4f) {
+                // Game Over Box
+                int boxW = 500, boxH = 260;
+                int boxX = screenW / 2 - boxW / 2;
+                int boxY = screenH / 2 - boxH / 2;
+
+                DrawRectangle(boxX, boxY, boxW, boxH, GetColor(0x12080CD0));
+                DrawRectangleLines(boxX, boxY, boxW, boxH, RED);
+                DrawRectangleLines(boxX + 4, boxY + 4, boxW - 8, boxH - 8, MAROON);
+
+                DrawText("YOU HAVE PERISHED", screenW / 2 - MeasureText("YOU HAVE PERISHED", 32) / 2, boxY + 35, 32, RED);
+                DrawText(TextFormat("Floor Reached: %d  |  Wave Reached: %d", world.currentRoom + 1, waves.currentWave), 
+                         screenW / 2 - MeasureText(TextFormat("Floor Reached: %d  |  Wave Reached: %d", world.currentRoom + 1, waves.currentWave), 14) / 2, 
+                         boxY + 85, 14, GRAY);
+
+                // Option Buttons
+                DrawRectangle(screenW / 2 - 180, boxY + 130, 360, 40, GetColor(0x221015FF));
+                DrawRectangleLines(screenW / 2 - 180, boxY + 130, 360, 40, RED);
+                DrawText("[R] RESTART FROM FLOOR 1", screenW / 2 - MeasureText("[R] RESTART FROM FLOOR 1", 14) / 2, boxY + 143, 14, RAYWHITE);
+
+                DrawRectangle(screenW / 2 - 180, boxY + 185, 360, 40, GetColor(0x151522FF));
+                DrawRectangleLines(screenW / 2 - 180, boxY + 185, 360, 40, SKYBLUE);
+                DrawText("[F9] LOAD LAST SAVE GAME", screenW / 2 - MeasureText("[F9] LOAD LAST SAVE GAME", 14) / 2, boxY + 198, 14, SKYBLUE);
+            }
+        }
+
+        // Footer Bar
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText(currentState == STATE_GAMEPLAY ? "[WASD] Move | [SPACE] Roll | [RMB] Fireball | [F5] Save | [F9] Load" 
+                                                : "[R] Restart Floor 1 | [F9] Load Save Game", 
+                 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+}
