@@ -1,0 +1,286 @@
+#pragma once
+#include "raylib.h"
+#include "WorldManager.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "EnemyWaveManager.h"
+#include <vector>
+#include <cmath>
+
+class Minimap {
+public:
+    static const int FOG_GRID_SIZE = 64; // 64x64 Fog Exploration Grid
+    bool exploredGrid[FOG_GRID_SIZE][FOG_GRID_SIZE];
+    
+    float worldWidth = 1200.0f;
+    float worldHeight = 900.0f;
+    
+    // UI Parameters
+    int mapSize = 160;
+    int margin = 20;
+    float visionRadius = 220.0f;
+    bool fullscreenMap = false;
+
+    Minimap() {
+        ResetFog();
+    }
+
+    void ResetFog() {
+        for (int x = 0; x < FOG_GRID_SIZE; x++) {
+            for (int y = 0; y < FOG_GRID_SIZE; y++) {
+                exploredGrid[x][y] = false;
+            }
+        }
+    }
+
+    void Update(Vector2 playerPos, float dt) {
+        if (IsKeyPressed(KEY_M)) {
+            fullscreenMap = !fullscreenMap;
+        }
+
+        // Reveal Fog of War around player
+        int gridX = (int)((playerPos.x / worldWidth) * FOG_GRID_SIZE);
+        int gridY = (int)((playerPos.y / worldHeight) * FOG_GRID_SIZE);
+        int visionCells = (int)((visionRadius / worldWidth) * FOG_GRID_SIZE) + 1;
+
+        for (int x = gridX - visionCells; x <= gridX + visionCells; x++) {
+            for (int y = gridY - visionCells; y <= gridY + visionCells; y++) {
+                if (x >= 0 && x < FOG_GRID_SIZE && y >= 0 && y < FOG_GRID_SIZE) {
+                    float cellWorldX = ((float)x / FOG_GRID_SIZE) * worldWidth;
+                    float cellWorldY = ((float)y / FOG_GRID_SIZE) * worldHeight;
+                    
+                    float distSq = (cellWorldX - playerPos.x) * (cellWorldX - playerPos.x) + 
+                                   (cellWorldY - playerPos.y) * (cellWorldY - playerPos.y);
+                    
+                    if (distSq <= visionRadius * visionRadius) {
+                        exploredGrid[x][y] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    Vector2 WorldToMinimap(Vector2 worldPos, int mapX, int mapY, int width, int height) const {
+        float nx = worldPos.x / worldWidth;
+        float ny = worldPos.y / worldHeight;
+        return {
+            mapX + nx * width,
+            mapY + ny * height
+        };
+    }
+
+    void Draw(int screenW, int screenH, const WorldManager& world, const Player& player, const BossManager& boss, const EnemyWaveManager& waves) {
+        int renderWidth = fullscreenMap ? 500 : mapSize;
+        int renderHeight = fullscreenMap ? 375 : (mapSize * 0.75f);
+        int mapX = fullscreenMap ? (screenW / 2 - renderWidth / 2) : (screenW - renderWidth - margin);
+        int mapY = fullscreenMap ? (screenH / 2 - renderHeight / 2) : margin;
+
+        // Minimap Background & Frame
+        DrawRectangle(mapX, mapY, renderWidth, renderHeight, GetColor(0x0A0A10E0));
+        DrawRectangleLines(mapX, mapY, renderWidth, renderHeight, GOLD);
+        DrawRectangleLines(mapX - 2, mapY - 2, renderWidth + 4, renderHeight + 4, GetColor(0x333344FF));
+
+        // Render Explored World Grid
+        float cellW = (float)renderWidth / FOG_GRID_SIZE;
+        float cellH = (float)renderHeight / FOG_GRID_SIZE;
+
+        for (int x = 0; x < FOG_GRID_SIZE; x++) {
+            for (int y = 0; y < FOG_GRID_SIZE; y++) {
+                if (exploredGrid[x][y]) {
+                    DrawRectangle((int)(mapX + x * cellW), (int)(mapY + y * cellH), 
+                                  (int)ceilf(cellW), (int)ceilf(cellH), GetColor(0x22332280));
+                } else {
+                    DrawRectangle((int)(mapX + x * cellW), (int)(mapY + y * cellH), 
+                                  (int)ceilf(cellW), (int)ceilf(cellH), GetColor(0x050508F0));
+                }
+            }
+        }
+
+        // Render Room Obstacles (Only on Explored Cells)
+        for (const auto& obs : world.obstacles) {
+            int gx = (int)((obs.x / worldWidth) * FOG_GRID_SIZE);
+            int gy = (int)((obs.y / worldHeight) * FOG_GRID_SIZE);
+            if (gx >= 0 && gx < FOG_GRID_SIZE && gy >= 0 && gy < FOG_GRID_SIZE && exploredGrid[gx][gy]) {
+                Vector2 minPos = WorldToMinimap({ obs.x, obs.y }, mapX, mapY, renderWidth, renderHeight);
+                Vector2 minSize = { (obs.width / worldWidth) * renderWidth, (obs.height / worldHeight) * renderHeight };
+                DrawRectangleV(minPos, minSize, GetColor(0x555566FF));
+            }
+        }
+
+        // Render Exit Portal Icon
+        Vector2 portalMinimap = WorldToMinimap(world.exitPortal, mapX, mapY, renderWidth, renderHeight);
+        DrawCircleV(portalMinimap, 3.5f, PURPLE);
+
+        // Render Wave Enemies
+        for (const auto& enemy : waves.enemies) {
+            if (enemy.active) {
+                Vector2 enemyMinimap = WorldToMinimap(enemy.pos, mapX, mapY, renderWidth, renderHeight);
+                DrawCircleV(enemyMinimap, 2.5f, RED);
+            }
+        }
+
+        // Render Boss Icon
+        if (boss.hp > 0) {
+            Vector2 bossMinimap = WorldToMinimap(boss.pos, mapX, mapY, renderWidth, renderHeight);
+            DrawPoly(bossMinimap, 4, 5.0f, 0.0f, ORANGE);
+            DrawPolyLines(bossMinimap, 4, 6.0f, 0.0f, RED);
+        }
+
+        // Render Player Icon & Direction Line
+        Vector2 playerMinimap = WorldToMinimap(player.pos, mapX, mapY, renderWidth, renderHeight);
+        DrawCircleV(playerMinimap, 3.5f, SKYBLUE);
+        DrawCircleLines((int)playerMinimap.x, (int)playerMinimap.y, 4.5f, WHITE);
+
+        // Direction Pointer
+        Vector2 dirPointer = {
+            playerMinimap.x + player.lastMoveDir.x * 8.0f,
+            playerMinimap.y + player.lastMoveDir.y * 8.0f
+        };
+        DrawLineV(playerMinimap, dirPointer, SKYBLUE);
+
+        // Map Label Header
+        DrawRectangle(mapX, mapY - 18, renderWidth, 18, GetColor(0x101018F0));
+        DrawRectangleLines(mapX, mapY - 18, renderWidth, 18, DARKGRAY);
+        DrawText(fullscreenMap ? "MAP (ESC/M TO CLOSE)" : "MINIMAP [M]", mapX + 6, mapY - 14, 10, LIGHTGRAY);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "GameState.h"
+#include "Minimap.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: HUD Minimap & Dynamic Fog of War");
+    SetTargetFPS(60);
+
+    // Systems
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+    soundMgr.PlayBGM("dungeon", 0.4f);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+    Minimap minimap;
+
+    GameState currentState = STATE_GAMEPLAY;
+    DeathSequence deathSeq;
+
+    player.pos = world.playerSpawn;
+
+    std::string notification = "MINIMAP SYSTEM INITIALIZED";
+    float notifTimer = 2.5f;
+
+    auto RestartGame = [&](bool loadSave = false) {
+        if (loadSave) {
+            if (player.LoadFromFile("savegame.dat", world.currentRoom)) {
+                world.GenerateProceduralDungeon(100 + world.currentRoom * 55);
+                notification = "GAME LOADED FROM SAVE!";
+            } else {
+                world.currentRoom = 0;
+                world.GenerateProceduralDungeon(12345);
+                player.ResetState(world.playerSpawn);
+                notification = "NO SAVE FOUND - RESTARTED";
+            }
+        } else {
+            world.currentRoom = 0;
+            world.GenerateProceduralDungeon(12345);
+            player.ResetState(world.playerSpawn);
+            notification = "GAME RESTARTED!";
+        }
+
+        boss = BossManager();
+        waves = EnemyWaveManager();
+        particles = ParticleEngine();
+        minimap.ResetFog();
+        deathSeq.Reset();
+        currentState = STATE_GAMEPLAY;
+        soundMgr.PlayBGM("dungeon", 0.4f);
+        notifTimer = 3.0f;
+    };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        soundMgr.Update();
+
+        if (currentState == STATE_GAMEPLAY) {
+            if (player.health <= 0.0f) {
+                player.health = 0.0f;
+                currentState = STATE_GAME_OVER;
+                soundMgr.StopBGM();
+                soundMgr.PlaySFX("hit", 0.5f, 1.0f);
+            }
+
+            // Engine Updates
+            player.Update(dt, particles);
+            waves.Update(dt, player, particles);
+            minimap.Update(player.pos, dt);
+
+            float dummyHP = player.health;
+            boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+            if (!player.isInvulnerable) player.health = dummyHP;
+        }
+
+        particles.Update(dt);
+        if (notifTimer > 0) notifTimer -= dt;
+
+        // Render Pass
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        waves.Draw();
+        
+        if (currentState == STATE_GAMEPLAY) {
+            player.Draw();
+        }
+        
+        particles.Draw();
+
+        // Lighting Pass
+        lighting.BeginLightPass();
+        if (currentState == STATE_GAMEPLAY) {
+            lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+        }
+        lighting.DrawLight(world.exitPortal, 180.0f, PURPLE, 0.7f);
+        if (boss.hp > 0) {
+            lighting.DrawLight(boss.pos, boss.enraged ? 220.0f : 160.0f, RED, boss.enraged ? 0.95f : 0.5f);
+        }
+        lighting.EndLightPass(GetColor(0x181822FF));
+
+        // HUD & Minimap Overlay
+        if (currentState == STATE_GAMEPLAY) {
+            player.DrawHUD();
+            player.DrawSkillTreeUI();
+            player.DrawInventoryUI();
+            minimap.Draw(screenW, screenH, world, player, boss, waves);
+        }
+
+        // Footer Bar
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [M] Toggle Map | [SPACE] Roll | [RMB] Fireball | [F5] Save | [F9] Load", 
+                 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+
+};
