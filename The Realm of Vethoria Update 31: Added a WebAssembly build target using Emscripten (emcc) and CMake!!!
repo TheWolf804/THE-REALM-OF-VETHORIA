@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Vethoria Engine - WebAssembly Edition</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            background-color: #0d0d14; 
+            color: #d1d5db; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            min-height: 100vh; 
+            overflow: hidden; 
+        }
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
+            border: 2px solid #374151;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        canvas.emscripten {
+            border: 0px none;
+            background-color: #000;
+            display: block;
+        }
+        #status {
+            margin-top: 12px;
+            font-size: 14px;
+            color: #9ca3af;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    </div>
+    
+    <div id="status">Downloading WebAssembly Engine Core...</div>
+
+    <script type='text/javascript'>
+      var statusElement = document.getElementById('status');
+      var Module = {
+        preRun: [],
+        postRun: [],
+        print: (function() {
+          return function(text) {
+            if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+            console.log(text);
+          };
+        })(),
+        canvas: (function() {
+          var canvas = document.getElementById('canvas');
+          canvas.addEventListener("webglcontextlost", function(e) { 
+              alert('WebGL context lost. You will need to reload the page.'); 
+              e.preventDefault(); 
+          }, false);
+          return canvas;
+        })(),
+        setStatus: function(text) {
+          if (!Module.setStatus.last) Module.setStatus.last = { time: Date.now(), text: '' };
+          if (text === Module.setStatus.last.text) return;
+          statusElement.innerHTML = text;
+        },
+        totalDependencies: 0,
+        monitorRunDependencies: function(left) {
+          this.totalDependencies = Math.max(this.totalDependencies, left);
+          Module.setStatus(left ? 'Preparing WebAssembly... (' + (this.totalDependencies-left) + '/' + this.totalDependencies + ')' : 'Engine running');
+        }
+      };
+      Module.setStatus('Downloading WebAssembly payload...');
+    </script>
+    {{{ SCRIPT }}}
+</body>
+# Add to existing CMakeLists.txt after options and FetchContent setup:
+
+if(EMSCRIPTEN)
+    set(CMAKE_EXECUTABLE_SUFFIX ".html")
+    
+    # Pass WebAssembly flags to the compiler & linker
+    set(WASM_LINK_FLAGS
+        "-s USE_GLFW=3"
+        "-s WASM=1"
+        "-s ALLOW_MEMORY_GROWTH=1"
+        "-s ASYNCIFY"
+        "-s FORCE_FILESYSTEM=1"
+        "--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html"
+    )
+
+    # Embed assets folder into WebAssembly virtual filesystem if it exists
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+        list(APPEND WASM_LINK_FLAGS "--preload-file ${CMAKE_CURRENT_SOURCE_DIR}/assets@/assets")
+    endif()
+
+    string(JOIN " " WASM_LINK_FLAGS_STR ${WASM_LINK_FLAGS})
+    set_target_properties(VethoriaGame PROPERTIES LINK_FLAGS "${WASM_LINK_FLAGS_STR}")
+    
+    message(STATUS "Configured target VethoriaGame for WebAssembly via Emscripten.")
+endif()
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "wasm",
+      "displayName": "WebAssembly Build",
+      "description": "Configure build for WebAssembly using Emscripten toolchain",
+      "binaryDir": "${sourceDir}/build/wasm",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "EMSCRIPTEN": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "wasm",
+      "configurePreset": "wasm"
+    }
+  ]
+}
+#!/usr/bin/env bash
+set -e
+
+if ! command -v emcmake &> /dev/null
+then
+    echo "[ERROR] Emscripten SDK (emscripten/emcmake) could not be found!"
+    echo "Please activate the Emscripten SDK environment (e.g., source path/to/emsdk/emsdk_env.sh)"
+    exit 1
+fi
+
+BUILD_DIR="build/wasm"
+PORT=8080
+
+echo "======================================================"
+echo " Compiling Vethoria Engine to WebAssembly..."
+echo "======================================================"
+
+mkdir -p $BUILD_DIR
+cd $BUILD_DIR
+
+emcmake cmake -DCMAKE_BUILD_TYPE=Release ../..
+cmake --build . --parallel $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+echo ""
+echo "======================================================"
+echo " WebAssembly Build Successful!"
+echo " Starting local HTTP server at http://localhost:$PORT"
+echo " Press Ctrl+C to stop the server."
+echo "======================================================"
+
+cd bin
+python3 -m http.server $PORT
+source /path/to/emsdk/emsdk_env.sh
+chmod +x build_wasm.sh
+./build_wasm.sh
+http://localhost:8080/VethoriaGame.html
+</html>
