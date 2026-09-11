@@ -1,0 +1,474 @@
+#pragma once
+#include "raylib.h"
+
+enum ItemType {
+    ITEM_NONE,
+    ITEM_WEAPON,
+    ITEM_ARMOR,
+    ITEM_RING,
+    ITEM_AMULET
+};
+
+enum EquipSlot {
+    SLOT_WEAPON,
+    SLOT_ARMOR,
+    SLOT_RING,
+    SLOT_AMULET,
+    SLOT_COUNT
+};
+
+enum Rarity {
+    RARITY_COMMON,
+    RARITY_RARE,
+    RARITY_EPIC,
+    RARITY_LEGENDARY
+};
+
+struct Item {
+    char name[32] = "Empty";
+    ItemType type = ITEM_NONE;
+    Rarity rarity = RARITY_COMMON;
+    int bonusAttack = 0;
+    int bonusDefense = 0;
+    int bonusHealth = 0;
+    int bonusMana = 0;
+    Color color = GRAY;
+#pragma once
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include <vector>
+#include <string>
+
+struct SpellProjectile {
+    Vector2 pos;
+    Vector2 dir;
+    float speed;
+    float radius;
+    float damage;
+    bool active;
+};
+
+class Player {
+public:
+    Vector2 pos = { 200.0f, 200.0f };
+    float speed = 220.0f;
+    float radius = 16.0f;
+
+    // Core Vitals
+    float health = 100.0f;
+    float maxHealth = 100.0f;
+    float mana = 100.0f;
+    float maxMana = 100.0f;
+    float stamina = 100.0f;
+    float maxStamina = 100.0f;
+
+    // Character Attributes
+    int level = 1;
+    int skillPoints = 0;
+    int strPoints = 0;
+    int agiPoints = 0;
+    int intPoints = 0;
+
+    // Derived Combat Stats
+    int totalAttack = 20;
+    int totalDefense = 5;
+
+    // Inventory & Equipment
+    static const int INVENTORY_CAPACITY = 12;
+    Item inventory[INVENTORY_CAPACITY];
+    bool slotOccupied[INVENTORY_CAPACITY] = { false };
+
+    Item equipment[SLOT_COUNT];
+    bool equipOccupied[SLOT_COUNT] = { false };
+
+    // Dodge Roll & Abilities
+    bool isRolling = false;
+    bool isInvulnerable = false;
+    float rollTimer = 0.0f;
+    Vector2 lastMoveDir = { 1.0f, 0.0f };
+    std::vector<SpellProjectile> activeSpells;
+
+    Player() {
+        // Equip Starter Weapon
+        Item starterSword;
+        TextCopy(starterSword.name, "Iron Longsword");
+        starterSword.type = ITEM_WEAPON;
+        starterSword.rarity = RARITY_COMMON;
+        starterSword.bonusAttack = 12;
+        starterSword.color = LIGHTGRAY;
+
+        equipment[SLOT_WEAPON] = starterSword;
+        equipOccupied[SLOT_WEAPON] = true;
+
+        // Populate Starter Inventory with Gear Drops
+        Item rareArmor;
+        TextCopy(rareArmor.name, "Knight Plate");
+        rareArmor.type = ITEM_ARMOR;
+        rareArmor.rarity = RARITY_RARE;
+        rareArmor.bonusDefense = 18;
+        rareArmor.bonusHealth = 50;
+        rareArmor.color = BLUE;
+        inventory[0] = rareArmor;
+        slotOccupied[0] = true;
+
+        Item epicRing;
+        TextCopy(epicRing.name, "Ruby Band");
+        epicRing.type = ITEM_RING;
+        epicRing.rarity = RARITY_EPIC;
+        epicRing.bonusAttack = 15;
+        epicRing.bonusMana = 40;
+        epicRing.color = PURPLE;
+        inventory[1] = epicRing;
+        slotOccupied[1] = true;
+
+        RecalculateStats();
+    }
+
+    void RecalculateStats() {
+        // Base formulas
+        maxHealth = 100.0f + (strPoints * 40.0f);
+        maxMana = 100.0f + (intPoints * 25.0f);
+        totalAttack = 20 + (strPoints * 4);
+        totalDefense = 5 + (agiPoints * 2);
+
+        // Sum bonuses from equipped gear
+        for (int i = 0; i < SLOT_COUNT; i++) {
+            if (equipOccupied[i]) {
+                totalAttack += equipment[i].bonusAttack;
+                totalDefense += equipment[i].bonusDefense;
+                maxHealth += equipment[i].bonusHealth;
+                maxMana += equipment[i].bonusMana;
+            }
+        }
+
+        if (health > maxHealth) health = maxHealth;
+        if (mana > maxMana) mana = maxMana;
+    }
+
+    bool EquipItem(int invIndex) {
+        if (invIndex < 0 || invIndex >= INVENTORY_CAPACITY || !slotOccupied[invIndex]) return false;
+
+        Item itemToEquip = inventory[invIndex];
+        EquipSlot targetSlot;
+
+        switch (itemToEquip.type) {
+            case ITEM_WEAPON: targetSlot = SLOT_WEAPON; break;
+            case ITEM_ARMOR:  targetSlot = SLOT_ARMOR; break;
+            case ITEM_RING:   targetSlot = SLOT_RING; break;
+            case ITEM_AMULET: targetSlot = SLOT_AMULET; break;
+            default: return false;
+        }
+
+        // Swap if slot occupied, otherwise place directly
+        if (equipOccupied[targetSlot]) {
+            Item currentEquipped = equipment[targetSlot];
+            equipment[targetSlot] = itemToEquip;
+            inventory[invIndex] = currentEquipped;
+        } else {
+            equipment[targetSlot] = itemToEquip;
+            equipOccupied[targetSlot] = true;
+            slotOccupied[invIndex] = false;
+        }
+
+        RecalculateStats();
+        return true;
+    }
+
+    bool UnequipItem(EquipSlot slot) {
+        if (!equipOccupied[slot]) return false;
+
+        // Find empty slot in inventory
+        for (int i = 0; i < INVENTORY_CAPACITY; i++) {
+            if (!slotOccupied[i]) {
+                inventory[i] = equipment[slot];
+                slotOccupied[i] = true;
+                equipOccupied[slot] = false;
+                RecalculateStats();
+                return true;
+            }
+        }
+        return false; // Inventory full
+    }
+
+    void ResetState(Vector2 spawnPos) {
+        pos = spawnPos;
+        health = maxHealth;
+        mana = maxMana;
+        stamina = maxStamina;
+        isRolling = false;
+        isInvulnerable = false;
+        rollTimer = 0.0f;
+        activeSpells.clear();
+    }
+
+    void Update(float dt, ParticleEngine& particles) {
+        // Movement Logic
+        Vector2 moveDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) moveDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) moveDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) moveDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) moveDir.x += 1.0f;
+
+        if (moveDir.x != 0.0f || moveDir.y != 0.0f) {
+            float len = sqrtf(moveDir.x * moveDir.x + moveDir.y * moveDir.y);
+            moveDir.x /= len;
+            moveDir.y /= len;
+            lastMoveDir = moveDir;
+        }
+
+        // Dodge Roll System
+        if (IsKeyPressed(KEY_SPACE) && !isRolling && stamina >= 25.0f) {
+            isRolling = true;
+            isInvulnerable = true;
+            rollTimer = 0.25f;
+            stamina -= 25.0f;
+            particles.Emit(pos, SKYBLUE, 15, 50.0f, 150.0f);
+        }
+
+        if (isRolling) {
+            pos.x += lastMoveDir.x * speed * 1.8f * dt;
+            pos.y += lastMoveDir.y * speed * 1.8f * dt;
+            rollTimer -= dt;
+
+            if (rollTimer <= 0.0f) {
+                isRolling = false;
+                isInvulnerable = false;
+            }
+        } else {
+            pos.x += moveDir.x * speed * dt;
+            pos.y += moveDir.y * speed * dt;
+        }
+
+        // Regenerate Stamina & Mana
+        if (stamina < maxStamina) stamina += 20.0f * dt;
+        if (mana < maxMana) mana += 10.0f * dt;
+
+        // Cast Fireball Spell
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && mana >= 30.0f) {
+            mana -= 30.0f;
+            Vector2 mousePos = GetMousePosition();
+            Vector2 spellDir = { mousePos.x - pos.x, mousePos.y - pos.y };
+            float len = sqrtf(spellDir.x * spellDir.x + spellDir.y * spellDir.y);
+            if (len > 0) { spellDir.x /= len; spellDir.y /= len; }
+
+            SpellProjectile spell;
+            spell.pos = pos;
+            spell.dir = spellDir;
+            spell.speed = 450.0f;
+            spell.radius = 10.0f;
+            spell.damage = (float)totalAttack * 1.5f;
+            spell.active = true;
+
+            activeSpells.push_back(spell);
+            particles.Emit(pos, ORANGE, 20, 80.0f, 220.0f);
+        }
+
+        // Update Projectiles
+        for (auto& spell : activeSpells) {
+            if (spell.active) {
+                spell.pos.x += spell.dir.x * spell.speed * dt;
+                spell.pos.y += spell.dir.y * spell.speed * dt;
+
+                if (spell.pos.x < 0 || spell.pos.x > 1280 || spell.pos.y < 0 || spell.pos.y > 720) {
+                    spell.active = false;
+                }
+            }
+        }
+    }
+
+    void Draw() {
+        DrawCircleV(pos, radius, isInvulnerable ? SKYBLUE : GOLD);
+        DrawCircleLines((int)pos.x, (int)pos.y, radius + 2.0f, WHITE);
+
+        for (const auto& spell : activeSpells) {
+            if (spell.active) {
+                DrawCircleV(spell.pos, spell.radius, ORANGE);
+                DrawCircleV(spell.pos, spell.radius * 0.5f, YELLOW);
+            }
+        }
+    }
+
+    void DrawHUD() {
+        DrawRectangle(20, 20, 220, 18, GetColor(0x101018D0));
+        DrawRectangle(20, 20, (int)(220 * (health / maxHealth)), 18, RED);
+        DrawRectangleLines(20, 20, 220, 18, WHITE);
+        DrawText(TextFormat("HP: %d/%d", (int)health, (int)maxHealth), 25, 22, 13, RAYWHITE);
+
+        DrawRectangle(20, 42, 220, 14, GetColor(0x101018D0));
+        DrawRectangle(20, 42, (int)(220 * (mana / maxMana)), 14, BLUE);
+        DrawRectangleLines(20, 42, 220, 14, WHITE);
+        DrawText(TextFormat("MP: %d/%d", (int)mana, (int)maxMana), 25, 43, 11, RAYWHITE);
+
+        DrawRectangle(20, 60, 220, 10, GetColor(0x101018D0));
+        DrawRectangle(20, 60, (int)(220 * (stamina / maxStamina)), 10, GREEN);
+        DrawRectangleLines(20, 60, 220, 10, WHITE);
+    }
+
+    void DrawEquipmentAndInventoryUI() {
+        int panelX = 20, panelY = 80;
+        int panelW = 300, panelH = 340;
+
+        DrawRectangle(panelX, panelY, panelW, panelH, GetColor(0x0A0A12EE));
+        DrawRectangleLines(panelX, panelY, panelW, panelH, GOLD);
+
+        DrawText("EQUIPMENT & STATS", panelX + 15, panelY + 12, 14, GOLD);
+        DrawText(TextFormat("Attack: %d  |  Defense: %d", totalAttack, totalDefense), panelX + 15, panelY + 32, 12, LIGHTGRAY);
+
+        // Render Equipment Slots
+        const char* slotNames[SLOT_COUNT] = { "Weapon", "Armor", "Ring", "Amulet" };
+        for (int i = 0; i < SLOT_COUNT; i++) {
+            int slotX = panelX + 15 + (i % 2) * 135;
+            int slotY = panelY + 55 + (i / 2) * 45;
+
+            DrawRectangle(slotX, slotY, 125, 38, equipOccupied[i] ? GetColor(0x222233FF) : GetColor(0x121218FF));
+            DrawRectangleLines(slotX, slotY, 125, 38, equipOccupied[i] ? equipment[i].color : DARKGRAY);
+
+            if (equipOccupied[i]) {
+                DrawText(equipment[i].name, slotX + 5, slotY + 5, 11, equipment[i].color);
+                DrawText(TextFormat("+%d Atk | +%d Def", equipment[i].bonusAttack, equipment[i].bonusDefense), slotX + 5, slotY + 20, 9, GRAY);
+
+                // Right click equipment to unequip
+                if (CheckCollisionPointRec(GetMousePosition(), { (float)slotX, (float)slotY, 125, 38 }) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    UnequipItem((EquipSlot)i);
+                }
+            } else {
+                DrawText(TextFormat("[%s]", slotNames[i]), slotX + 10, slotY + 12, 11, DARKGRAY);
+            }
+        }
+
+        // Render Inventory Grid
+        DrawText("INVENTORY (CLICK TO EQUIP)", panelX + 15, panelY + 155, 12, GOLD);
+        for (int i = 0; i < INVENTORY_CAPACITY; i++) {
+            int slotX = panelX + 15 + (i % 4) * 68;
+            int slotY = panelY + 175 + (i / 4) * 50;
+
+            DrawRectangle(slotX, slotY, 62, 42, slotOccupied[i] ? GetColor(0x1B1B26FF) : GetColor(0x101014FF));
+            DrawRectangleLines(slotX, slotY, 62, 42, slotOccupied[i] ? inventory[i].color : DARKGRAY);
+
+            if (slotOccupied[i]) {
+                DrawText(inventory[i].name, slotX + 3, slotY + 4, 9, inventory[i].color);
+                DrawText(TextFormat("+%d", inventory[i].bonusAttack > 0 ? inventory[i].bonusAttack : inventory[i].bonusDefense), 
+                         slotX + 3, slotY + 24, 9, LIGHTGRAY);
+
+                if (CheckCollisionPointRec(GetMousePosition(), { (float)slotX, (float)slotY, 62, 42 }) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    EquipItem(i);
+                }
+            }
+        }
+    }
+};
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "GameState.h"
+#include "Minimap.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Gear Equipment & Stat Modification System");
+    SetTargetFPS(60);
+
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+    soundMgr.PlayBGM("dungeon", 0.4f);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+    Minimap minimap;
+
+    GameState currentState = STATE_GAMEPLAY;
+    DeathSequence deathSeq;
+
+    player.pos = world.playerSpawn;
+
+    std::string notification = "LEFT CLICK GEAR IN PANEL TO EQUIP / UNEQUIP";
+    float notifTimer = 3.5f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        soundMgr.Update();
+
+        if (currentState == STATE_GAMEPLAY) {
+            if (player.health <= 0.0f) {
+                player.health = 0.0f;
+                currentState = STATE_GAME_OVER;
+                soundMgr.StopBGM();
+                soundMgr.PlaySFX("hit", 0.5f, 1.0f);
+            }
+
+            player.Update(dt, particles);
+            waves.Update(dt, player, particles);
+            minimap.Update(player.pos, dt);
+
+            float dummyHP = player.health;
+            boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+            if (!player.isInvulnerable) player.health = dummyHP;
+        }
+
+        particles.Update(dt);
+        if (notifTimer > 0) notifTimer -= dt;
+
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        world.DrawCurrentRoom();
+        boss.Draw();
+        waves.Draw();
+        
+        if (currentState == STATE_GAMEPLAY) {
+            player.Draw();
+        }
+        
+        particles.Draw();
+
+        // Lighting Pass
+        lighting.BeginLightPass();
+        if (currentState == STATE_GAMEPLAY) {
+            lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+        }
+        lighting.DrawLight(world.exitPortal, 180.0f, PURPLE, 0.7f);
+        if (boss.hp > 0) {
+            lighting.DrawLight(boss.pos, boss.enraged ? 220.0f : 160.0f, RED, boss.enraged ? 0.95f : 0.5f);
+        }
+        lighting.EndLightPass(GetColor(0x181822FF));
+
+        // HUD & Equipment Panel UI
+        if (currentState == STATE_GAMEPLAY) {
+            player.DrawHUD();
+            player.DrawEquipmentAndInventoryUI();
+            minimap.Draw(screenW, screenH, world, player, boss, waves);
+        }
+
+        if (notifTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 220, 20, 440, 35, GetColor(0x000000D0));
+            DrawRectangleLines(screenW / 2 - 220, 20, 440, 35, GOLD);
+            DrawText(notification.c_str(), screenW / 2 - MeasureText(notification.c_str(), 13) / 2, 30, 13, GOLD);
+        }
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [L-Click] Equip/Unequip Gear | [SPACE] Roll | [RMB] Fireball", 
+                 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+
+};
