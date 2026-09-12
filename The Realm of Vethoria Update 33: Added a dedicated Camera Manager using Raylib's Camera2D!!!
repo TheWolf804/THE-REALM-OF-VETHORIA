@@ -1,0 +1,228 @@
+#pragma once
+#include "raylib.h"
+#include <cmath>
+#include <algorithm>
+
+class CameraManager {
+public:
+    Camera2D camera = { 0 };
+    
+    // Smooth Follow Parameters
+    float followSpeed = 6.0f;
+    Vector2 targetPos = { 0.0f, 0.0f };
+
+    // Screen Shake Parameters
+    float shakeTrauma = 0.0f;     // Trauma value [0.0 to 1.0]
+    float maxShakeOffset = 25.0f; // Max pixel offset at Trauma = 1.0
+    float maxShakeAngle = 4.0f;   // Max rotation angle in degrees
+    float traumaDecay = 1.8f;     // Trauma reduction rate per second
+
+    // Zoom Parameters
+    float targetZoom = 1.0f;
+    float currentZoom = 1.0f;
+    float zoomSpeed = 3.0f;
+
+    CameraManager(int screenWidth, int screenHeight) {
+        camera.offset = { (float)screenWidth / 2.0f, (float)screenHeight / 2.0f };
+        camera.target = { 0.0f, 0.0f };
+        camera.rotation = 0.0f;
+        camera.zoom = 1.0f;
+    }
+
+    void AddTrauma(float amount) {
+        shakeTrauma = std::min(1.0f, shakeTrauma + amount);
+    }
+
+    void SetTargetZoom(float zoom) {
+        targetZoom = zoom;
+    }
+
+    void Update(Vector2 playerPos, Vector2 bossPos, bool bossAlive, float dt) {
+        // 1. Calculate Target Center (Midpoint when near boss, player otherwise)
+        if (bossAlive) {
+            float distToBoss = sqrtf(powf(bossPos.x - playerPos.x, 2) + powf(bossPos.y - playerPos.y, 2));
+            if (distToBoss < 450.0f) {
+                // Focus on midpoint between player and boss during boss fight
+                targetPos = { (playerPos.x + bossPos.x) * 0.5f, (playerPos.y + bossPos.y) * 0.5f };
+                SetTargetZoom(0.85f); // Zoom out slightly to frame the arena
+            } else {
+                targetPos = playerPos;
+                SetTargetZoom(1.0f);
+            }
+        } else {
+            targetPos = playerPos;
+            SetTargetZoom(1.0f);
+        }
+
+        // 2. Smooth Target Position Tracking (Exponential Lerp)
+        camera.target.x += (targetPos.x - camera.target.x) * followSpeed * dt;
+        camera.target.y += (targetPos.y - camera.target.y) * followSpeed * dt;
+
+        // 3. Smooth Zoom Interpolation
+        currentZoom += (targetZoom - currentZoom) * zoomSpeed * dt;
+        camera.zoom = currentZoom;
+
+        // 4. Calculate Non-Linear Screen Shake (Trauma^2 for better punch)
+        if (shakeTrauma > 0.0f) {
+            float shakePower = shakeTrauma * shakeTrauma; // Non-linear response
+
+            float offsetX = ((float)GetRandomValue(-100, 100) / 100.0f) * maxShakeOffset * shakePower;
+            float offsetY = ((float)GetRandomValue(-100, 100) / 100.0f) * maxShakeOffset * shakePower;
+            float angle   = ((float)GetRandomValue(-100, 100) / 100.0f) * maxShakeAngle  * shakePower;
+
+            camera.target.x += offsetX;
+            camera.target.y += offsetY;
+            camera.rotation = angle;
+
+            // Decay trauma over time
+            shakeTrauma = std::max(0.0f, shakeTrauma - traumaDecay * dt);
+        } else {
+            camera.rotation = 0.0f;
+        }
+    }
+
+    void BeginMode() const {
+        BeginMode2D(camera);
+    }
+
+    void EndMode() const {
+        EndMode2D();
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "GameState.h"
+#include "Minimap.h"
+#include "CameraManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Dynamic Camera2D, Screen Shake & Boss Zoom");
+    SetTargetFPS(60);
+
+    // Systems Initializations
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+    soundMgr.PlayBGM("dungeon", 0.4f);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+    Minimap minimap;
+    CameraManager cameraMgr(screenW, screenH);
+
+    GameState currentState = STATE_GAMEPLAY;
+    DeathSequence deathSeq;
+
+    player.pos = world.playerSpawn;
+
+    std::string notification = "DYNAMIC CAMERA SYSTEM ENGAGED";
+    float notifTimer = 3.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        soundMgr.Update();
+
+        if (currentState == STATE_GAMEPLAY) {
+            if (player.health <= 0.0f) {
+                player.health = 0.0f;
+                currentState = STATE_GAME_OVER;
+                cameraMgr.AddTrauma(0.8f); // Strong impact shake on death
+                soundMgr.StopBGM();
+                soundMgr.PlaySFX("hit", 0.5f, 1.0f);
+            }
+
+            // Engine Updates
+            player.Update(dt, particles);
+            waves.Update(dt, player, particles);
+            minimap.Update(player.pos, dt);
+
+            float prevHP = player.health;
+            float dummyHP = player.health;
+            boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+            
+            if (!player.isInvulnerable) player.health = dummyHP;
+
+            // Trigger screen shake on taking damage
+            if (player.health < prevHP) {
+                cameraMgr.AddTrauma(0.5f);
+            }
+
+            // Update Camera State
+            cameraMgr.Update(player.pos, boss.pos, boss.hp > 0, dt);
+        }
+
+        particles.Update(dt);
+        if (notifTimer > 0) notifTimer -= dt;
+
+        // RENDER PASS
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        // -----------------------------------------------------------------
+        // 1. WORLD SPACE RENDER PASS (SUBJECT TO CAMERA TRANSFORM & SHAKE)
+        // -----------------------------------------------------------------
+        cameraMgr.BeginMode();
+
+            world.DrawCurrentRoom();
+            boss.Draw();
+            waves.Draw();
+            
+            if (currentState == STATE_GAMEPLAY) {
+                player.Draw();
+            }
+            
+            particles.Draw();
+
+            // Dynamic Lighting Pass
+            lighting.BeginLightPass();
+            if (currentState == STATE_GAMEPLAY) {
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+            }
+            lighting.DrawLight(world.exitPortal, 180.0f, PURPLE, 0.7f);
+            if (boss.hp > 0) {
+                lighting.DrawLight(boss.pos, boss.enraged ? 220.0f : 160.0f, RED, boss.enraged ? 0.95f : 0.5f);
+            }
+            lighting.EndLightPass(GetColor(0x181822FF));
+
+        cameraMgr.EndMode();
+
+        // -----------------------------------------------------------------
+        // 2. SCREEN SPACE HUD RENDER PASS (FIXED TO WINDOW)
+        // -----------------------------------------------------------------
+        if (currentState == STATE_GAMEPLAY) {
+            player.DrawHUD();
+            player.DrawEquipmentAndInventoryUI();
+            minimap.Draw(screenW, screenH, world, player, boss, waves);
+        }
+
+        if (notifTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 220, 20, 440, 35, GetColor(0x000000D0));
+            DrawRectangleLines(screenW / 2 - 220, 20, 440, 35, GOLD);
+            DrawText(notification.c_str(), screenW / 2 - MeasureText(notification.c_str(), 13) / 2, 30, 13, GOLD);
+        }
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [L-Click] Inventory | [SPACE] Roll | Dynamic Camera Enabled", 
+                 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+};
