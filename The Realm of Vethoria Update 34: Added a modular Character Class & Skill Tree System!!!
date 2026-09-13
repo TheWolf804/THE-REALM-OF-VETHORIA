@@ -1,0 +1,528 @@
+#pragma once
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include <vector>
+#include <string>
+#include <cmath>
+
+enum CharacterClassType {
+    CLASS_WARRIOR,
+    CLASS_MAGE,
+    CLASS_ROGUE
+};
+
+enum SkillType {
+    SKILL_PASSIVE_STAT,
+    SKILL_ACTIVE_ABILITY
+};
+
+struct SkillNode {
+    int id;
+    char name[32];
+    char description[64];
+    SkillType type;
+    int tier;              // Unlock requirement (Level/Points)
+    bool unlocked = false;
+    int requiredNodeId = -1; // Dependency node (-1 for base)
+    
+    // Bonus Attributes / Skill Effects
+    int bonusAtk = 0;
+    int bonusDef = 0;
+    int bonusHp = 0;
+    float cooldown = 0.0f;
+    float currentCd = 0.0f;
+};
+
+class ClassSystem {
+public:
+    CharacterClassType currentClass = CLASS_WARRIOR;
+    std::vector<SkillNode> skillTree;
+
+    // Ability States & Cooldowns
+    float abilityQ_CD = 0.0f;
+    float abilityE_CD = 0.0f;
+    float qMaxCD = 5.0f;
+    float eMaxCD = 10.0f;
+
+    // Buff tracking
+    float shieldTimer = 0.0f;
+    float speedBuffTimer = 0.0f;
+
+    ClassSystem() {
+        SelectClass(CLASS_WARRIOR);
+    }
+
+    void SelectClass(CharacterClassType type) {
+        currentClass = type;
+        skillTree.clear();
+
+        if (type == CLASS_WARRIOR) {
+            qMaxCD = 4.0f; // Ground Slam
+            eMaxCD = 8.0f; // Iron Shield
+
+            skillTree.push_back({ 0, "Iron Clad", "+15 Defense", SKILL_PASSIVE_STAT, 1, false, -1, 0, 15, 0, 0, 0 });
+            skillTree.push_back({ 1, "Ground Slam [Q]", "AOE Damage around player", SKILL_ACTIVE_ABILITY, 1, false, 0, 0, 0, 0, 4.0f });
+            skillTree.push_back({ 2, "Iron Shield [E]", "Grant temporary invulnerability", SKILL_ACTIVE_ABILITY, 2, false, 1, 0, 0, 0, 8.0f });
+        } 
+        else if (type == CLASS_MAGE) {
+            qMaxCD = 3.0f; // Frost Nova
+            eMaxCD = 12.0f; // Arcane Intellect
+
+            skillTree.push_back({ 0, "Arcane Focus", "+25 Bonus Mana & +10 Atk", SKILL_PASSIVE_STAT, 1, false, -1, 10, 0, 25, 0, 0 });
+            skillTree.push_back({ 1, "Frost Nova [Q]", "Freeze and damage nearby foes", SKILL_ACTIVE_ABILITY, 1, false, 0, 0, 0, 0, 3.0f });
+            skillTree.push_back({ 2, "Arcane Surge [E]", "Instantly restore 50 Mana", SKILL_ACTIVE_ABILITY, 2, false, 1, 0, 0, 0, 12.0f });
+        } 
+        else if (type == CLASS_ROGUE) {
+            qMaxCD = 2.5f; // Shadow Dash
+            eMaxCD = 10.0f; // Poison Blade
+
+            skillTree.push_back({ 0, "Fleet Foot", "+15% Speed & +10 Atk", SKILL_PASSIVE_STAT, 1, false, -1, 10, 0, 0, 0, 0 });
+            skillTree.push_back({ 1, "Shadow Dash [Q]", "Blink forward rapidly", SKILL_ACTIVE_ABILITY, 1, false, 0, 0, 0, 0, 2.5f });
+            skillTree.push_back({ 2, "Deadly Precision [E]", "Increases speed and attack", SKILL_ACTIVE_ABILITY, 2, false, 1, 15, 0, 0, 10.0f });
+        }
+    }
+
+    void Update(float dt) {
+        if (abilityQ_CD > 0.0f) abilityQ_CD -= dt;
+        if (abilityE_CD > 0.0f) abilityE_CD -= dt;
+        if (shieldTimer > 0.0f) shieldTimer -= dt;
+        if (speedBuffTimer > 0.0f) speedBuffTimer -= dt;
+    }
+
+    // Execute Active Ability Q
+    bool TriggerAbilityQ(Vector2 playerPos, ParticleEngine& particles, float& mana) {
+        if (abilityQ_CD > 0.0f) return false;
+
+        if (currentClass == CLASS_WARRIOR && skillTree[1].unlocked) {
+            abilityQ_CD = qMaxCD;
+            particles.Emit(playerPos, RED, 35, 100.0f, 300.0f); // Slam shockwave
+            return true;
+        } 
+        else if (currentClass == CLASS_MAGE && skillTree[1].unlocked && mana >= 20.0f) {
+            mana -= 20.0f;
+            abilityQ_CD = qMaxCD;
+            particles.Emit(playerPos, SKYBLUE, 40, 120.0f, 250.0f); // Frost Ring
+            return true;
+        } 
+        else if (currentClass == CLASS_ROGUE && skillTree[1].unlocked) {
+            abilityQ_CD = qMaxCD;
+            particles.Emit(playerPos, PURPLE, 20, 50.0f, 150.0f);
+            return true;
+        }
+        return false;
+    }
+
+    // Execute Active Ability E
+    bool TriggerAbilityE(Vector2 playerPos, ParticleEngine& particles, float& mana, float& health, float maxMana) {
+        if (abilityE_CD > 0.0f) return false;
+
+        if (currentClass == CLASS_WARRIOR && skillTree[2].unlocked) {
+            abilityE_CD = eMaxCD;
+            shieldTimer = 3.0f; // 3 Seconds Invulnerability
+            particles.Emit(playerPos, GOLD, 30, 40.0f, 120.0f);
+            return true;
+        } 
+        else if (currentClass == CLASS_MAGE && skillTree[2].unlocked) {
+            abilityE_CD = eMaxCD;
+            mana = std::min(maxMana, mana + 50.0f); // Surge Mana
+            particles.Emit(playerPos, BLUE, 30, 60.0f, 180.0f);
+            return true;
+        } 
+        else if (currentClass == CLASS_ROGUE && skillTree[2].unlocked) {
+            abilityE_CD = eMaxCD;
+            speedBuffTimer = 5.0f;
+            particles.Emit(playerPos, LIME, 25, 80.0f, 200.0f);
+            return true;
+        }
+        return false;
+    }
+
+    void UnlockSkillNode(int index, int& availablePoints) {
+        if (index < 0 || index >= (int)skillTree.size()) return;
+        if (availablePoints <= 0 || skillTree[index].unlocked) return;
+
+        // Check requirement
+        if (skillTree[index].requiredNodeId != -1) {
+            int req = skillTree[index].requiredNodeId;
+            if (!skillTree[req].unlocked) return;
+        }
+
+        skillTree[index].unlocked = true;
+        availablePoints--;
+    }
+#pragma once
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "CharacterClass.h"
+#include <vector>
+#include <string>
+
+struct SpellProjectile {
+    Vector2 pos;
+    Vector2 dir;
+    float speed;
+    float radius;
+    float damage;
+    bool active;
+};
+
+class Player {
+public:
+    Vector2 pos = { 200.0f, 200.0f };
+    float speed = 220.0f;
+    float radius = 16.0f;
+
+    // Vitals
+    float health = 100.0f;
+    float maxHealth = 100.0f;
+    float mana = 100.0f;
+    float maxMana = 100.0f;
+    float stamina = 100.0f;
+    float maxStamina = 100.0f;
+
+    // Progression
+    int level = 1;
+    int skillPoints = 2; // Initial points for testing
+
+    // Stats
+    int totalAttack = 20;
+    int totalDefense = 5;
+
+    // Inventory & Equipment
+    static const int INVENTORY_CAPACITY = 12;
+    Item inventory[INVENTORY_CAPACITY];
+    bool slotOccupied[INVENTORY_CAPACITY] = { false };
+    Item equipment[SLOT_COUNT];
+    bool equipOccupied[SLOT_COUNT] = { false };
+
+    // Class & Abilities System
+    ClassSystem classSys;
+
+    // Dodge Roll & Combat
+    bool isRolling = false;
+    bool isInvulnerable = false;
+    float rollTimer = 0.0f;
+    Vector2 lastMoveDir = { 1.0f, 0.0f };
+    std::vector<SpellProjectile> activeSpells;
+
+    Player() {
+        RecalculateStats();
+    }
+
+    void SetClass(CharacterClassType newClass) {
+        classSys.SelectClass(newClass);
+        RecalculateStats();
+    }
+
+    void RecalculateStats() {
+        // Base Stats by Class
+        if (classSys.currentClass == CLASS_WARRIOR) {
+            maxHealth = 150.0f;
+            maxMana = 50.0f;
+            totalAttack = 25;
+            totalDefense = 12;
+            speed = 200.0f;
+        } else if (classSys.currentClass == CLASS_MAGE) {
+            maxHealth = 80.0f;
+            maxMana = 160.0f;
+            totalAttack = 35;
+            totalDefense = 3;
+            speed = 210.0f;
+        } else if (classSys.currentClass == CLASS_ROGUE) {
+            maxHealth = 100.0f;
+            maxMana = 80.0f;
+            totalAttack = 28;
+            totalDefense = 6;
+            speed = 260.0f;
+        }
+
+        // Apply Skill Tree Passives
+        for (const auto& node : classSys.skillTree) {
+            if (node.unlocked && node.type == SKILL_PASSIVE_STAT) {
+                totalAttack += node.bonusAtk;
+                totalDefense += node.bonusDef;
+                maxHealth += node.bonusHp;
+            }
+        }
+
+        // Apply Speed Buff from Rogue E
+        if (classSys.speedBuffTimer > 0.0f) {
+            speed *= 1.35f;
+        }
+
+        // Apply Equipped Gear Bonuses
+        for (int i = 0; i < SLOT_COUNT; i++) {
+            if (equipOccupied[i]) {
+                totalAttack += equipment[i].bonusAttack;
+                totalDefense += equipment[i].bonusDefense;
+                maxHealth += equipment[i].bonusHealth;
+                maxMana += equipment[i].bonusMana;
+            }
+        }
+
+        if (health > maxHealth) health = maxHealth;
+        if (mana > maxMana) mana = maxMana;
+    }
+
+    void Update(float dt, ParticleEngine& particles) {
+        classSys.Update(dt);
+        isInvulnerable = (classSys.shieldTimer > 0.0f) || isRolling;
+
+        // Active Ability Hotkeys
+        if (IsKeyPressed(KEY_Q)) {
+            if (classSys.TriggerAbilityQ(pos, particles, mana)) {
+                // Rogue Shadow Dash teleport
+                if (classSys.currentClass == CLASS_ROGUE) {
+                    pos.x += lastMoveDir.x * 120.0f;
+                    pos.y += lastMoveDir.y * 120.0f;
+                }
+            }
+        }
+        if (IsKeyPressed(KEY_E)) {
+            classSys.TriggerAbilityE(pos, particles, mana, health, maxMana);
+        }
+
+        // Movement Logic
+        Vector2 moveDir = { 0.0f, 0.0f };
+        if (IsKeyDown(KEY_W)) moveDir.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) moveDir.y += 1.0f;
+        if (IsKeyDown(KEY_A)) moveDir.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) moveDir.x += 1.0f;
+
+        if (moveDir.x != 0.0f || moveDir.y != 0.0f) {
+            float len = sqrtf(moveDir.x * moveDir.x + moveDir.y * moveDir.y);
+            moveDir.x /= len; moveDir.y /= len;
+            lastMoveDir = moveDir;
+        }
+
+        // Dodge Roll
+        if (IsKeyPressed(KEY_SPACE) && !isRolling && stamina >= 25.0f) {
+            isRolling = true;
+            rollTimer = 0.25f;
+            stamina -= 25.0f;
+            particles.Emit(pos, SKYBLUE, 15, 50.0f, 150.0f);
+        }
+
+        if (isRolling) {
+            pos.x += lastMoveDir.x * speed * 1.8f * dt;
+            pos.y += lastMoveDir.y * speed * 1.8f * dt;
+            rollTimer -= dt;
+            if (rollTimer <= 0.0f) isRolling = false;
+        } else {
+            pos.x += moveDir.x * speed * dt;
+            pos.y += moveDir.y * speed * dt;
+        }
+
+        if (stamina < maxStamina) stamina += 20.0f * dt;
+        if (mana < maxMana) mana += 10.0f * dt;
+
+        // Cast Fireball Spell (RMB)
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && mana >= 20.0f) {
+            mana -= 20.0f;
+            Vector2 mousePos = GetMousePosition();
+            Vector2 spellDir = { mousePos.x - pos.x, mousePos.y - pos.y };
+            float len = sqrtf(spellDir.x * spellDir.x + spellDir.y * spellDir.y);
+            if (len > 0) { spellDir.x /= len; spellDir.y /= len; }
+
+            SpellProjectile spell = { pos, spellDir, 450.0f, 10.0f, (float)totalAttack * 1.4f, true };
+            activeSpells.push_back(spell);
+            particles.Emit(pos, ORANGE, 15, 60.0f, 180.0f);
+        }
+
+        for (auto& spell : activeSpells) {
+            if (spell.active) {
+                spell.pos.x += spell.dir.x * spell.speed * dt;
+                spell.pos.y += spell.dir.y * spell.speed * dt;
+                if (spell.pos.x < 0 || spell.pos.x > 1280 || spell.pos.y < 0 || spell.pos.y > 720) {
+                    spell.active = false;
+                }
+            }
+        }
+    }
+
+    void Draw() {
+        Color classColor = GOLD;
+        if (classSys.currentClass == CLASS_MAGE) classColor = SKYBLUE;
+        if (classSys.currentClass == CLASS_ROGUE) classColor = LIME;
+
+        DrawCircleV(pos, radius, isInvulnerable ? WHITE : classColor);
+        DrawCircleLines((int)pos.x, (int)pos.y, radius + 2.0f, WHITE);
+
+        if (classSys.shieldTimer > 0.0f) {
+            DrawCircleLines((int)pos.x, (int)pos.y, radius + 8.0f, GOLD);
+        }
+
+        for (const auto& spell : activeSpells) {
+            if (spell.active) {
+                DrawCircleV(spell.pos, spell.radius, ORANGE);
+            }
+        }
+    }
+
+    void DrawHUD() {
+        DrawRectangle(20, 20, 220, 18, GetColor(0x101018D0));
+        DrawRectangle(20, 20, (int)(220 * (health / maxHealth)), 18, RED);
+        DrawRectangleLines(20, 20, 220, 18, WHITE);
+        DrawText(TextFormat("HP: %d/%d", (int)health, (int)maxHealth), 25, 22, 13, RAYWHITE);
+
+        DrawRectangle(20, 42, 220, 14, GetColor(0x101018D0));
+        DrawRectangle(20, 42, (int)(220 * (mana / maxMana)), 14, BLUE);
+        DrawRectangleLines(20, 42, 220, 14, WHITE);
+        DrawText(TextFormat("MP: %d/%d", (int)mana, (int)maxMana), 25, 43, 11, RAYWHITE);
+
+        // Active Ability Cooldown HUD Icons
+        DrawRectangle(250, 20, 36, 36, GetColor(0x151520F0));
+        DrawRectangleLines(250, 20, 36, 36, classSys.abilityQ_CD <= 0 ? GOLD : DARKGRAY);
+        DrawText("Q", 262, 28, 16, WHITE);
+        if (classSys.abilityQ_CD > 0.0f) {
+            DrawText(TextFormat("%.1f", classSys.abilityQ_CD), 254, 30, 11, RED);
+        }
+
+        DrawRectangle(292, 20, 36, 36, GetColor(0x151520F0));
+        DrawRectangleLines(292, 20, 36, 36, classSys.abilityE_CD <= 0 ? GOLD : DARKGRAY);
+        DrawText("E", 304, 28, 16, WHITE);
+        if (classSys.abilityE_CD > 0.0f) {
+            DrawText(TextFormat("%.1f", classSys.abilityE_CD), 296, 30, 11, RED);
+        }
+    }
+
+    void DrawSkillTreeUI() {
+        int panelX = 20, panelY = 430;
+        int panelW = 300, panelH = 250;
+
+        DrawRectangle(panelX, panelY, panelW, panelH, GetColor(0x0A0A12EE));
+        DrawRectangleLines(panelX, panelY, panelW, panelH, GOLD);
+
+        DrawText(TextFormat("SKILL TREE (POINTS: %d)", skillPoints), panelX + 15, panelY + 12, 13, GOLD);
+
+        // Class Switcher Buttons
+        if (GuiButton({ (float)panelX + 15, (float)panelY + 32, 80, 22 }, "Warrior")) SetClass(CLASS_WARRIOR);
+        if (GuiButton({ (float)panelX + 105, (float)panelY + 32, 80, 22 }, "Mage")) SetClass(CLASS_MAGE);
+        if (GuiButton({ (float)panelX + 195, (float)panelY + 32, 80, 22 }, "Rogue")) SetClass(CLASS_ROGUE);
+
+        // Render Skill Nodes
+        for (size_t i = 0; i < classSys.skillTree.size(); i++) {
+            auto& node = classSys.skillTree[i];
+            int nodeX = panelX + 15;
+            int nodeY = panelY + 68 + (int)i * 55;
+
+            Color borderColor = node.unlocked ? GREEN : (skillPoints > 0 ? GOLD : DARKGRAY);
+            DrawRectangle(nodeX, nodeY, 270, 46, GetColor(0x141420FF));
+            DrawRectangleLines(nodeX, nodeY, 270, 46, borderColor);
+
+            DrawText(node.name, nodeX + 8, nodeY + 6, 11, node.unlocked ? GREEN : WHITE);
+            DrawText(node.description, nodeX + 8, nodeY + 24, 9, GRAY);
+
+            // Unlock Button
+            if (!node.unlocked && skillPoints > 0) {
+                if (CheckCollisionPointRec(GetMousePosition(), { (float)nodeX, (float)nodeY, 270, 46 }) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    classSys.UnlockSkillNode((int)i, skillPoints);
+                    RecalculateStats();
+                }
+            }
+        }
+    }
+
+private:
+    bool GuiButton(Rectangle rect, const char* text) {
+        bool clicked = CheckCollisionPointRec(GetMousePosition(), rect) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+        DrawRectangleRec(rect, clicked ? GRAY : GetColor(0x222233FF));
+        DrawRectangleLinesEx(rect, 1, LIGHTGRAY);
+        DrawText(text, (int)rect.x + 10, (int)rect.y + 5, 10, WHITE);
+        return clicked;
+    }
+};
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "WorldManager.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "GameState.h"
+#include "Minimap.h"
+#include "CameraManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Playable Character Classes & Skill Trees");
+    SetTargetFPS(60);
+
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+    soundMgr.PlayBGM("dungeon", 0.4f);
+
+    Player player;
+    BossManager boss;
+    WorldManager world;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+    Minimap minimap;
+    CameraManager cameraMgr(screenW, screenH);
+
+    GameState currentState = STATE_GAMEPLAY;
+    player.pos = world.playerSpawn;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        soundMgr.Update();
+
+        if (currentState == STATE_GAMEPLAY) {
+            player.Update(dt, particles);
+            waves.Update(dt, player, particles);
+            minimap.Update(player.pos, dt);
+
+            float dummyHP = player.health;
+            boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+            if (!player.isInvulnerable) player.health = dummyHP;
+
+            cameraMgr.Update(player.pos, boss.pos, boss.hp > 0, dt);
+        }
+
+        particles.Update(dt);
+
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        // World Space Render Pass
+        cameraMgr.BeginMode();
+            world.DrawCurrentRoom();
+            boss.Draw();
+            waves.Draw();
+            if (currentState == STATE_GAMEPLAY) player.Draw();
+            particles.Draw();
+
+            lighting.BeginLightPass();
+            if (currentState == STATE_GAMEPLAY) lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+            lighting.DrawLight(world.exitPortal, 180.0f, PURPLE, 0.7f);
+            if (boss.hp > 0) lighting.DrawLight(boss.pos, boss.enraged ? 220.0f : 160.0f, RED, 0.8f);
+            lighting.EndLightPass(GetColor(0x181822FF));
+        cameraMgr.EndMode();
+
+        // Screen Space HUD Pass
+        if (currentState == STATE_GAMEPLAY) {
+            player.DrawHUD();
+            player.DrawSkillTreeUI();
+            minimap.Draw(screenW, screenH, world, player, boss, waves);
+        }
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [Q/E] Active Abilities | [L-Click] Unlock Skills | [RMB] Cast Spell", 
+                 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+};
