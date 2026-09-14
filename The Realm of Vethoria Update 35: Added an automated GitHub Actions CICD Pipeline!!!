@@ -1,0 +1,112 @@
+name: Vethoria Engine CI/CD & Deploy
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+# Grant GITHUB_TOKEN permissions required to deploy to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow concurrent deployments to cancel older runs
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  # =================================================================
+  # JOB 1: Build WebAssembly and Deploy to GitHub Pages
+  # =================================================================
+  build-and-deploy-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v13
+        with:
+          version: '3.1.56'
+          actions-cache-folder: 'emsdk-cache'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libx11-dev libxrandr-dev libxinerama-dev libxi-dev libxcursor-dev libgl1-mesa-dev
+
+      - name: Build WebAssembly Target
+        run: |
+          mkdir -p build/wasm
+          cd build/wasm
+          emcmake cmake -DCMAKE_BUILD_TYPE=Release -DEMSCRIPTEN=ON ../..
+          cmake --build . --config Release --parallel $(nproc)
+
+      - name: Prepare Web Deployment Artifacts
+        run: |
+          mkdir -p dist
+          cp build/wasm/VethoriaGame.html dist/index.html
+          cp build/wasm/VethoriaGame.wasm dist/ 2>/dev/null || true
+          cp build/wasm/VethoriaGame.js dist/ 2>/dev/null || true
+          cp build/wasm/VethoriaGame.data dist/ 2>/dev/null || true
+
+      - name: Setup GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages Artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'dist'
+
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # =================================================================
+  # JOB 2: Build Native Matrix (Linux, Windows, macOS)
+  # =================================================================
+  build-native-matrix:
+    name: Build Native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux Build Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libx11-dev libxrandr-dev libxinerama-dev libxi-dev libxcursor-dev libgl1-mesa-dev libasound2-dev
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Game Binary
+        run: cmake --build build --config Release
+
+      - name: Upload Native Binaries as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VethoriaGame-${{ runner.os }}
+          path: |
+            build/VethoriaGame
+            build/Release/VethoriaGame.exe
+            build/VethoriaGame.app
+
+          if-no-files-found: ignore
