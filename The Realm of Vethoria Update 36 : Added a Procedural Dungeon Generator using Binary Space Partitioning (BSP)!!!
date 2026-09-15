@@ -1,0 +1,358 @@
+#pragma once
+#include "raylib.h"
+#include <vector>
+#include <cstdlib>
+#include <algorithm>
+#include <cmath>
+
+struct DungeonRoom {
+    Rectangle rect;
+    Vector2 center;
+};
+
+class BSPNode {
+public:
+    Rectangle bounds;
+    BSPNode* left = nullptr;
+    BSPNode* right = nullptr;
+    DungeonRoom room = { { 0, 0, 0, 0 }, { 0, 0 } };
+    bool hasRoom = false;
+
+    BSPNode(Rectangle b) : bounds(b) {}
+
+    ~BSPNode() {
+        delete left;
+        delete right;
+    }
+
+    bool Split(int minSize) {
+        if (left != nullptr || right != nullptr) return false; // Already split
+
+        // Determine split orientation (Horizontal or Vertical)
+        bool splitH = (GetRandomValue(0, 1) == 0);
+        if (bounds.width / bounds.height >= 1.25f) splitH = false; // Force vertical split for wide leaves
+        else if (bounds.height / bounds.width >= 1.25f) splitH = true;  // Force horizontal split for tall leaves
+
+        float maxSplit = (splitH ? bounds.height : bounds.width) - minSize;
+        if (maxSplit <= minSize) return false; // Leaf too small to split further
+
+        float splitPos = (float)GetRandomValue(minSize, (int)maxSplit);
+
+        if (splitH) {
+            left = new BSPNode({ bounds.x, bounds.y, bounds.width, splitPos });
+            right = new BSPNode({ bounds.x, bounds.y + splitPos, bounds.width, bounds.height - splitPos });
+        } else {
+            left = new BSPNode({ bounds.x, bounds.y, splitPos, bounds.height });
+            right = new BSPNode({ bounds.x + splitPos, bounds.y, bounds.width - splitPos, bounds.height });
+        }
+
+        return true;
+    }
+
+    void CreateRooms(int minRoomSize) {
+        if (left != nullptr || right != nullptr) {
+            if (left != nullptr) left->CreateRooms(minRoomSize);
+            if (right != nullptr) right->CreateRooms(minRoomSize);
+        } else {
+            // Leaf node: generate room within bounds with padding
+            float roomW = (float)GetRandomValue(minRoomSize, (int)bounds.width - 40);
+            float roomH = (float)GetRandomValue(minRoomSize, (int)bounds.height - 40);
+            float roomX = bounds.x + (float)GetRandomValue(20, (int)(bounds.width - roomW - 20));
+            float roomY = bounds.y + (float)GetRandomValue(20, (int)(bounds.height - roomH - 20));
+
+            room.rect = { roomX, roomY, roomW, roomH };
+            room.center = { roomX + roomW / 2.0f, roomY + roomH / 2.0f };
+            hasRoom = true;
+        }
+    }
+
+    DungeonRoom GetRoom() {
+        if (hasRoom) return room;
+        if (left != nullptr) return left->GetRoom();
+        if (right != nullptr) return right->GetRoom();
+        return { { 0, 0, 0, 0 }, { 0, 0 } };
+    }
+};
+
+class DungeonGenerator {
+public:
+    static const int GRID_COLS = 60;
+    static const int GRID_ROWS = 40;
+    static const int TILE_SIZE = 32;
+
+    enum TileType { TILE_VOID, TILE_FLOOR, TILE_WALL, TILE_CORRIDOR };
+    TileType grid[GRID_ROWS][GRID_COLS];
+
+    BSPNode* rootNode = nullptr;
+    std::vector<DungeonRoom> rooms;
+    
+    Vector2 playerSpawnPos = { 0, 0 };
+    Vector2 bossSpawnPos = { 0, 0 };
+    std::vector<Vector2> enemySpawns;
+    std::vector<Vector2> chestSpawns;
+
+    void Generate(int maxSplits = 4, int minLeafSize = 180, int minRoomSize = 90) {
+        // Reset Grid
+        for (int r = 0; r < GRID_ROWS; r++) {
+            for (int c = 0; c < GRID_COLS; c++) {
+                grid[r][c] = TILE_VOID;
+            }
+        }
+        rooms.clear();
+        enemySpawns.clear();
+        chestSpawns.clear();
+
+        delete rootNode;
+        rootNode = new BSPNode({ 0, 0, (float)(GRID_COLS * TILE_SIZE), (float)(GRID_ROWS * TILE_SIZE) });
+
+        // Step 1: Recursive BSP Split
+        std::vector<BSPNode*> leaves;
+        leaves.push_back(rootNode);
+
+        for (int i = 0; i < maxSplits; i++) {
+            std::vector<BSPNode*> nextLeaves;
+            for (auto node : leaves) {
+                if (node->Split(minLeafSize)) {
+                    nextLeaves.push_back(node->left);
+                    nextLeaves.push_back(node->right);
+                } else {
+                    nextLeaves.push_back(node);
+                }
+            }
+            leaves = nextLeaves;
+        }
+
+        // Step 2: Create Rooms inside Leaves
+        rootNode->CreateRooms(minRoomSize);
+        CollectRooms(rootNode);
+
+        // Step 3: Carve Rooms into Grid
+        for (const auto& room : rooms) {
+            int startC = (int)(room.rect.x / TILE_SIZE);
+            int startR = (int)(room.rect.y / TILE_SIZE);
+            int endC   = (int)((room.rect.x + room.rect.width) / TILE_SIZE);
+            int endR   = (int)((room.rect.y + room.rect.height) / TILE_SIZE);
+
+            for (int r = startR; r < endR; r++) {
+                for (int c = startC; c < endC; c++) {
+                    if (r >= 0 && r < GRID_ROWS && c >= 0 && c < GRID_COLS) {
+                        grid[r][c] = TILE_FLOOR;
+                    }
+                }
+            }
+        }
+
+        // Step 4: Connect Rooms via Corridors
+        ConnectCorridors(rootNode);
+
+        // Step 5: Surround Floors with Walls
+        BuildWalls();
+
+        // Step 6: Dynamic Entity Spawns
+        if (!rooms.empty()) {
+            playerSpawnPos = rooms[0].center; // First room is Player Spawn
+            bossSpawnPos = rooms.back().center; // Farthest leaf room is Boss arena
+
+            for (size_t i = 1; i < rooms.size() - 1; i++) {
+                // Populate mid-tier rooms with enemies and chest drops
+                enemySpawns.push_back({ rooms[i].center.x - 30.0f, rooms[i].center.y });
+                enemySpawns.push_back({ rooms[i].center.x + 30.0f, rooms[i].center.y });
+                chestSpawns.push_back(rooms[i].center);
+            }
+        }
+    }
+
+private:
+    void CollectRooms(BSPNode* node) {
+        if (node == nullptr) return;
+        if (node->hasRoom) {
+            rooms.push_back(node->room);
+        }
+        CollectRooms(node->left);
+        CollectRooms(node->right);
+    }
+
+    void ConnectCorridors(BSPNode* node) {
+        if (node == nullptr || node->left == nullptr || node->right == nullptr) return;
+
+        ConnectCorridors(node->left);
+        ConnectCorridors(node->right);
+
+        DungeonRoom roomA = node->left->GetRoom();
+        DungeonRoom roomB = node->right->GetRoom();
+
+        // Carve L-shaped corridor between center points
+        int startX = (int)(roomA.center.x / TILE_SIZE);
+        int startY = (int)(roomA.center.y / TILE_SIZE);
+        int endX   = (int)(roomB.center.x / TILE_SIZE);
+        int endY   = (int)(roomB.center.y / TILE_SIZE);
+
+        int currX = startX;
+        int currY = startY;
+
+        while (currX != endX) {
+            if (currY >= 0 && currY < GRID_ROWS && currX >= 0 && currX < GRID_COLS) {
+                if (grid[currY][currX] == TILE_VOID) grid[currY][currX] = TILE_CORRIDOR;
+            }
+            currX += (endX > currX) ? 1 : -1;
+        }
+
+        while (currY != endY) {
+            if (currY >= 0 && currY < GRID_ROWS && currX >= 0 && currX < GRID_COLS) {
+                if (grid[currY][currX] == TILE_VOID) grid[currY][currX] = TILE_CORRIDOR;
+            }
+            currY += (endY > currY) ? 1 : -1;
+        }
+    }
+
+    void BuildWalls() {
+        for (int r = 0; r < GRID_ROWS; r++) {
+            for (int c = 0; c < GRID_COLS; c++) {
+                if (grid[r][c] == TILE_FLOOR || grid[r][c] == TILE_CORRIDOR) {
+                    // Check 8-way neighbors to set surrounding boundaries as WALL
+                    for (int dr = -1; dr <= 1; dr++) {
+                        for (int dc = -1; dc <= 1; dc++) {
+                            int nr = r + dr;
+                            int nc = c + dc;
+                            if (nr >= 0 && nr < GRID_ROWS && nc >= 0 && nc < GRID_COLS) {
+                                if (grid[nr][nc] == TILE_VOID) {
+                                    grid[nr][nc] = TILE_WALL;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+public:
+    void Draw() {
+        for (int r = 0; r < GRID_ROWS; r++) {
+            for (int c = 0; c < GRID_COLS; c++) {
+                Rectangle tileRect = { (float)c * TILE_SIZE, (float)r * TILE_SIZE, (float)TILE_SIZE, (float)TILE_SIZE };
+                
+                if (grid[r][c] == TILE_FLOOR) {
+                    DrawRectangleRec(tileRect, GetColor(0x1C1C28FF));
+                    DrawRectangleLinesEx(tileRect, 1, GetColor(0x282838FF));
+                } else if (grid[r][c] == TILE_CORRIDOR) {
+                    DrawRectangleRec(tileRect, GetColor(0x222234FF));
+                } else if (grid[r][c] == TILE_WALL) {
+                    DrawRectangleRec(tileRect, GetColor(0x0C0C14FF));
+                    DrawRectangleLinesEx(tileRect, 1, GetColor(0x44445AFF));
+                }
+            }
+        }
+
+        // Draw Chest Locations
+        for (const auto& chestPos : chestSpawns) {
+            DrawRectangle((int)chestPos.x - 8, (int)chestPos.y - 8, 16, 16, GOLD);
+            DrawRectangleLines((int)chestPos.x - 8, (int)chestPos.y - 8, 16, 16, YELLOW);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "GameState.h"
+#include "Minimap.h"
+#include "CameraManager.h"
+#include "DungeonGenerator.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: BSP Procedural Dungeon & Dynamic Spawns");
+    SetTargetFPS(60);
+
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+    soundMgr.PlayBGM("dungeon", 0.4f);
+
+    Player player;
+    BossManager boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+    Minimap minimap;
+    CameraManager cameraMgr(screenW, screenH);
+    DungeonGenerator dungeon;
+
+    // Generate initial procedural layout
+    dungeon.Generate();
+    player.pos = dungeon.playerSpawnPos;
+    boss.pos = dungeon.bossSpawnPos;
+
+    GameState currentState = STATE_GAMEPLAY;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        soundMgr.Update();
+
+        // Re-generate dungeon on pressing 'R'
+        if (IsKeyPressed(KEY_R)) {
+            dungeon.Generate();
+            player.pos = dungeon.playerSpawnPos;
+            boss.pos = dungeon.bossSpawnPos;
+            particles.Emit(player.pos, GOLD, 40, 100.0f, 300.0f);
+        }
+
+        if (currentState == STATE_GAMEPLAY) {
+            player.Update(dt, particles);
+            waves.Update(dt, player, particles);
+            minimap.Update(player.pos, dt);
+
+            float dummyHP = player.health;
+            boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+            if (!player.isInvulnerable) player.health = dummyHP;
+
+            cameraMgr.Update(player.pos, boss.pos, boss.hp > 0, dt);
+        }
+
+        particles.Update(dt);
+
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        // World Space Render Pass
+        cameraMgr.BeginMode();
+            dungeon.Draw();
+            boss.Draw();
+            waves.Draw();
+            if (currentState == STATE_GAMEPLAY) player.Draw();
+            particles.Draw();
+
+            lighting.BeginLightPass();
+            if (currentState == STATE_GAMEPLAY) lighting.DrawLight(player.pos, 280.0f, ORANGE, 0.85f);
+            lighting.DrawLight(dungeon.bossSpawnPos, 220.0f, RED, 0.8f);
+            for (const auto& chest : dungeon.chestSpawns) {
+                lighting.DrawLight(chest, 100.0f, GOLD, 0.6f);
+            }
+            lighting.EndLightPass(GetColor(0x181822FF));
+        cameraMgr.EndMode();
+
+        // Screen Space HUD
+        if (currentState == STATE_GAMEPLAY) {
+            player.DrawHUD();
+            player.DrawSkillTreeUI();
+        }
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[WASD] Move | [R] Regenerate Dungeon Layout | [Q/E] Abilities | [RMB] Fireball", 
+                 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+
+};
