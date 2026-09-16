@@ -1,0 +1,282 @@
+const WebSocket = require('ws');
+const wss = new WebSocket.Server({ port: 8080 });
+
+console.log("Vethoria Co-Op WebSocket Server running on ws://localhost:8080");
+
+let players = {};
+let nextPlayerId = 1;
+
+wss.on('connection', (ws) => {
+    const playerId = nextPlayerId++;
+    players[playerId] = { ws, x: 200, y: 200, hp: 100, isHost: playerId === 1 };
+
+    console.log(`Player ${playerId} connected. Host status: ${players[playerId].isHost}`);
+
+    // Send assignment info to connecting client
+    ws.send(JSON.stringify({
+        type: "init",
+        playerId: playerId,
+        isHost: players[playerId].isHost
+    }));
+
+    // Broadcast updated player count
+    broadcast({
+        type: "peer_joined",
+        totalPlayers: Object.keys(players).length
+    });
+
+    ws.on('message', (message) => {
+        try {
+            const data = JSON.parse(message);
+            
+            if (data.type === "state_update") {
+                players[playerId].x = data.x;
+                players[playerId].y = data.y;
+                players[playerId].hp = data.hp;
+
+                // Relay update to peer
+                broadcastToOthers(playerId, {
+                    type: "peer_update",
+                    peerId: playerId,
+                    x: data.x,
+                    y: data.y,
+                    hp: data.hp,
+                    class: data.class
+                });
+            } else if (data.type === "ability_trigger") {
+                broadcastToOthers(playerId, {
+                    type: "peer_ability",
+                    peerId: playerId,
+                    abilityKey: data.abilityKey,
+                    x: data.x,
+                    y: data.y
+                });
+            }
+        } catch (e) {
+            console.error("Invalid packet:", e);
+        }
+    });
+
+    ws.on('close', () => {
+        delete players[playerId];
+        console.log(`Player ${playerId} disconnected.`);
+        broadcast({ type: "peer_left", peerId: playerId });
+    });
+});
+
+function broadcast(data) {
+    const payload = JSON.stringify(data);
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(payload);
+        }
+    });
+}
+
+function broadcastToOthers(senderId, data) {
+    const payload = JSON.stringify(data);
+    Object.keys(players).forEach(id => {
+        if (parseInt(id) !== senderId && players[id].ws.readyState === WebSocket.OPEN) {
+            players[id].ws.send(payload);
+        }
+    });
+#pragma once
+#include "raylib.h"
+#include <iostream>
+#include <string>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
+struct PeerState {
+    int id = -1;
+    Vector2 pos = { 0, 0 };
+    Vector2 targetPos = { 0, 0 }; // For smooth linear interpolation
+    float hp = 100.0f;
+    int classType = 0;
+    bool active = false;
+};
+
+class NetworkClient {
+public:
+    int localPlayerId = -1;
+    bool isHost = false;
+    PeerState peer;
+
+    void Init(const char* serverUrl) {
+#ifdef __EMSCRIPTEN__
+        EM_ASM({
+            const url = UTF8ToString($0);
+            window.gameSocket = new WebSocket(url);
+
+            window.gameSocket.onopen = () => {
+                console.log("[WASM Network] Connected to server.");
+            };
+
+            window.gameSocket.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.type === "init") {
+                    Module.localPlayerId = msg.playerId;
+                    Module.isHost = msg.isHost;
+                } else if (msg.type === "peer_update") {
+                    Module.peerX = msg.x;
+                    Module.peerY = msg.y;
+                    Module.peerHp = msg.hp;
+                    Module.peerClass = msg.class;
+                    Module.peerActive = true;
+                } else if (msg.type === "peer_left") {
+                    Module.peerActive = false;
+                }
+            };
+        }, serverUrl);
+#endif
+    }
+
+    void Update(Vector2 localPos, float localHp, int classType, float dt) {
+#ifdef __EMSCRIPTEN__
+        // Query JS state populated by socket callbacks
+        localPlayerId = EM_ASM_INT({ return Module.localPlayerId || -1; });
+        isHost = EM_ASM_INT({ return Module.isHost ? 1 : 0; });
+        
+        peer.active = EM_ASM_INT({ return Module.peerActive ? 1 : 0; });
+
+        if (peer.active) {
+            peer.targetPos.x = (float)EM_ASM_DOUBLE({ return Module.peerX || 0; });
+            peer.targetPos.y = (float)EM_ASM_DOUBLE({ return Module.peerY || 0; });
+            peer.hp = (float)EM_ASM_DOUBLE({ return Module.peerHp || 100; });
+            peer.classType = EM_ASM_INT({ return Module.peerClass || 0; });
+
+            // Linear Interpolation (LERP) for smooth movement across network frames
+            peer.pos.x += (peer.targetPos.x - peer.pos.x) * 15.0f * dt;
+            peer.pos.y += (peer.targetPos.y - peer.pos.y) * 15.0f * dt;
+        }
+
+        // Send outbound local state (Throttle rate via delta time if necessary)
+        EM_ASM({
+            if (window.gameSocket && window.gameSocket.readyState === WebSocket.OPEN) {
+                window.gameSocket.send(JSON.stringify({
+                    type: "state_update",
+                    x: $0,
+                    y: $1,
+                    hp: $2,
+                    class: $3
+                }));
+            }
+        }, (double)localPos.x, (double)localPos.y, (double)localHp, classType);
+#endif
+    }
+
+    void DrawPeer() {
+        if (!peer.active) return;
+
+        Color peerColor = SKYBLUE;
+        if (peer.classType == 0) peerColor = RED;      // Warrior
+        else if (peer.classType == 1) peerColor = GOLD; // Mage
+        else if (peer.classType == 2) peerColor = LIME; // Rogue
+
+        DrawCircleV(peer.pos, 16.0f, peerColor);
+        DrawCircleLines((int)peer.pos.x, (int)peer.pos.y, 18.0f, WHITE);
+        DrawText("P2 (CO-OP)", (int)peer.pos.x - 28, (int)peer.pos.y - 32, 11, RAYWHITE);
+        
+        // Peer Health Bar
+        DrawRectangle((int)peer.pos.x - 20, (int)peer.pos.y - 22, 40, 5, RED);
+        DrawRectangle((int)peer.pos.x - 20, (int)peer.pos.y - 22, (int)(40 * (peer.hp / 100.0f)), 5, GREEN);
+    }
+};
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "GameState.h"
+#include "Minimap.h"
+#include "CameraManager.h"
+#include "DungeonGenerator.h"
+#include "NetworkClient.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: WebSockets 2-Player Co-Op");
+    SetTargetFPS(60);
+
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+
+    Player player;
+    BossManager boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+    Minimap minimap;
+    CameraManager cameraMgr(screenW, screenH);
+    DungeonGenerator dungeon;
+    NetworkClient netClient;
+
+    // Connect to WebSockets backend server
+    netClient.Init("ws://localhost:8080");
+
+    dungeon.Generate();
+    player.pos = dungeon.playerSpawnPos;
+    boss.pos = dungeon.bossSpawnPos;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        player.Update(dt, particles);
+        
+        // Synchronize state with network peer
+        netClient.Update(player.pos, player.health, (int)player.classSys.currentClass, dt);
+
+        waves.Update(dt, player, particles);
+        particles.Update(dt);
+
+        float dummyHP = player.health;
+        boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+
+        cameraMgr.Update(player.pos, netClient.peer.active ? netClient.peer.pos : boss.pos, true, dt);
+
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        cameraMgr.BeginMode();
+            dungeon.Draw();
+            boss.Draw();
+            waves.Draw();
+            
+            // Draw Local Player and Remote Peer
+            player.Draw();
+            netClient.DrawPeer();
+            
+            particles.Draw();
+
+            lighting.BeginLightPass();
+            lighting.DrawLight(player.pos, 250.0f, ORANGE, 0.85f);
+            if (netClient.peer.active) {
+                lighting.DrawLight(netClient.peer.pos, 250.0f, SKYBLUE, 0.85f);
+            }
+            lighting.EndLightPass(GetColor(0x181822FF));
+        cameraMgr.EndMode();
+
+        // Overlay HUD
+        player.DrawHUD();
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText(TextFormat("NETWORK STATUS: %s | PLAYER ID: %d", 
+                 netClient.peer.active ? "CONNECTED TO PEER" : "SEARCHING FOR P2...", netClient.localPlayerId), 
+                 20, screenH - 22, 13, netClient.peer.active ? GREEN : YELLOW);
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}
+}
