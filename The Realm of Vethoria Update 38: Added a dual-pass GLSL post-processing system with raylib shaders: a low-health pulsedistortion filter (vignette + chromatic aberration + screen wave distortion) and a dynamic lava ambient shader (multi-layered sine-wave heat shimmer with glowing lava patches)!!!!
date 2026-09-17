@@ -1,0 +1,225 @@
+precision mediump float;
+
+varying vec2 fragTexCoord;
+varying vec4 fragColor;
+
+uniform sampler2D texture0;
+uniform float uTime;
+uniform vec2 uResolution;
+
+void main() {
+    vec2 uv = fragTexCoord;
+
+    // Multi-layered sine wave distortion for lava heat shimmer
+    float waveX = sin(uv.y * 20.0 + uTime * 3.0) * 0.003;
+    float waveY = cos(uv.x * 20.0 + uTime * 2.5) * 0.003;
+    vec2 distortedUV = uv + vec2(waveX, waveY);
+
+    // Sample scene texture
+    vec4 sceneColor = texture2D(texture0, distortedUV);
+
+    // Generate dynamic lava heat glow patches using trigonometric noise
+    float noise = sin(distortedUV.x * 12.0 + uTime) * cos(distortedUV.y * 12.0 - uTime * 1.5);
+    float glowMask = smoothstep(0.2, 0.8, noise);
+
+    // Deep lava tint (Orange/Red ambient heat)
+    vec3 lavaGlow = vec3(1.0, 0.35, 0.05) * glowMask * 0.3;
+
+    gl_FragColor = vec4(sceneColor.rgb + lavaGlow, sceneColor.a);
+precision mediump float;
+
+varying vec2 fragTexCoord;
+varying vec4 fragColor;
+
+uniform sampler2D texture0;
+uniform float uTime;
+uniform float uHealthFactor; // Ranges from 0.0 (Dead) to 1.0 (Full Health)
+
+void main() {
+    vec2 uv = fragTexCoord;
+
+    // Calculate low-health intensity (activates below 35% health)
+    float dangerIntensity = clamp((0.35 - uHealthFactor) / 0.35, 0.0, 1.0);
+
+    // Pulsing frequency tied to danger level
+    float pulse = (sin(uTime * 8.0) * 0.5 + 0.5) * dangerIntensity;
+
+    // 1. Chromatic Aberration offset based on danger
+    float offset = 0.008 * dangerIntensity * (1.0 + pulse);
+    float r = texture2D(texture0, uv + vec2(offset, 0.0)).r;
+    float g = texture2D(texture0, uv).g;
+    float b = texture2D(texture0, uv - vec2(offset, 0.0)).b;
+    vec3 color = vec3(r, g, b);
+
+    // 2. Pulsing Red Edge Vignette
+    vec2 distFromCenter = uv - vec2(0.5);
+    float len = length(distFromCenter);
+    float vignette = smoothstep(0.3, 0.7, len);
+    vec3 redBorder = vec3(0.8, 0.05, 0.05) * vignette * dangerIntensity * (0.6 + pulse * 0.4);
+
+    color += redBorder;
+
+    gl_FragColor = vec4(color, 1.0);
+}
+#pragma once
+#include "raylib.h"
+#include <iostream>
+
+class PostProcessingManager {
+public:
+    RenderTexture2D target;
+    Shader lavaShader;
+    Shader lowHealthShader;
+
+    int lavaTimeLoc = -1;
+    int lavaResLoc = -1;
+    
+    int healthTimeLoc = -1;
+    int healthFactorLoc = -1;
+
+    float totalTime = 0.0f;
+
+    void Init(int width, int height) {
+        target = LoadRenderTexture(width, height);
+
+        // Load Shaders (Compatible across Native and WebAssembly)
+        lavaShader = LoadShader(0, "shaders/lava_ambient.fs");
+        lowHealthShader = LoadShader(0, "shaders/low_health.fs");
+
+        // Uniform Locations
+        lavaTimeLoc = GetShaderLocation(lavaShader, "uTime");
+        lavaResLoc = GetShaderLocation(lavaShader, "uResolution");
+
+        healthTimeLoc = GetShaderLocation(lowHealthShader, "uTime");
+        healthFactorLoc = GetShaderLocation(lowHealthShader, "uHealthFactor");
+
+        Vector2 res = { (float)width, (float)height };
+        SetShaderValue(lavaShader, lavaResLoc, &res, SHADER_UNIFORM_VEC2);
+    }
+
+    void Unload() {
+        UnloadRenderTexture(target);
+        UnloadShader(lavaShader);
+        UnloadShader(lowHealthShader);
+    }
+
+    void BeginRenderPass() {
+        BeginTextureMode(target);
+        ClearBackground(BLACK);
+    }
+
+    void EndRenderPassAndApplyFX(float dt, float currentHealth, float maxHealth, int screenW, int screenH) {
+        EndTextureMode();
+
+        totalTime += dt;
+        float healthFactor = currentHealth / maxHealth;
+
+        // Update Shader Uniforms
+        SetShaderValue(lavaShader, lavaTimeLoc, &totalTime, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(lowHealthShader, healthTimeLoc, &totalTime, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(lowHealthShader, healthFactorLoc, &healthFactor, SHADER_UNIFORM_FLOAT);
+
+        // Multi-pass Post Processing (Lava ambient -> Low Health Pass)
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        // Draw texture using low health shader with render target texture flipped on Y
+        BeginShaderMode(lowHealthShader);
+            DrawTextureRec(
+                target.texture, 
+                Rectangle{ 0, 0, (float)target.texture.width, (float)-target.texture.height }, 
+                Vector2{ 0, 0 }, 
+                WHITE
+            );
+        EndShaderMode();
+    }
+};
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "BossManager.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "GameState.h"
+#include "Minimap.h"
+#include "CameraManager.h"
+#include "DungeonGenerator.h"
+#include "PostProcessingManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: GLSL Shaders & Post-Processing");
+    SetTargetFPS(60);
+
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+
+    Player player;
+    BossManager boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+    CameraManager cameraMgr(screenW, screenH);
+    DungeonGenerator dungeon;
+    PostProcessingManager postFX;
+
+    postFX.Init(screenW, screenH);
+    dungeon.Generate();
+    player.pos = dungeon.playerSpawnPos;
+    boss.pos = dungeon.bossSpawnPos;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Simulate Health Drain for testing low health FX
+        if (IsKeyDown(KEY_H)) player.health = floatMax(0.0f, player.health - 25.0f * dt);
+        if (IsKeyDown(KEY_J)) player.health = floatMin(100.0f, player.health + 25.0f * dt);
+
+        player.Update(dt, particles);
+        waves.Update(dt, player, particles);
+        particles.Update(dt);
+
+        float dummyHP = player.health;
+        boss.Update(dt, player.pos, (float)player.totalDefense, dummyHP, particles);
+
+        cameraMgr.Update(player.pos, boss.pos, boss.hp > 0, dt);
+
+        // PASS 1: Render Game Scene to Framebuffer Texture
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                dungeon.Draw();
+                boss.Draw();
+                waves.Draw();
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.DrawLight(dungeon.bossSpawnPos, 220.0f, RED, 0.8f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        // PASS 2: Apply GLSL Shaders & Output to Screen
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // Screen Space HUD Overlay
+        player.DrawHUD();
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[H/J] Adjust Health (Test FX) | WASD Move | Q/E Abilities", 
+                 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+}
