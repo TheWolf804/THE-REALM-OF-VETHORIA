@@ -1,0 +1,435 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "ParticleEngine.h"
+#include <vector>
+#include <cmath>
+
+enum BossPhase {
+    PHASE_1_TACTICAL = 1,
+    PHASE_2_BULLET_HELL = 2,
+    PHASE_3_ENRAGED = 3
+};
+
+enum BossState {
+    BOSS_IDLE,
+    BOSS_CHASE,
+    BOSS_TELEGRAPHING,
+    BOSS_ATTACKING,
+    BOSS_RECOVERY
+};
+
+enum BossAttackType {
+    ATTACK_MELEE_SLASH,
+    ATTACK_DASH_STRIKE,
+    ATTACK_BULLET_RING,
+    ATTACK_LAVA_HAZARD
+};
+
+struct BossBullet {
+    Vector2 pos;
+    Vector2 vel;
+    float radius;
+    float lifetime;
+    bool active;
+};
+
+struct LavaHazard {
+    Vector2 pos;
+    float radius;
+    float duration;
+    float maxDuration;
+    float tickTimer;
+    bool active;
+};
+
+class MultiStageBoss {
+public:
+    Vector2 pos;
+    Vector2 vel;
+    float radius = 32.0f;
+    float hp = 1000.0f;
+    float maxHp = 1000.0f;
+    float speed = 140.0f;
+
+    BossPhase currentPhase = PHASE_1_TACTICAL;
+    BossState currentState = BOSS_IDLE;
+    BossAttackType currentAttack = ATTACK_MELEE_SLASH;
+
+    // Telegraphing & Attack Timers
+    float stateTimer = 0.0f;
+    float telegraphDuration = 1.0f;
+    float attackCooldown = 1.5f;
+    float cooldownTimer = 0.0f;
+
+    // Telegraph Visual Indicators
+    Vector2 telegraphTarget = { 0, 0 };
+    float telegraphRadius = 0.0f;
+
+    // Projectiles & Floor Hazards
+    std::vector<BossBullet> bullets;
+    std::vector<LavaHazard> hazards;
+
+    void Init(Vector2 spawnPos) {
+        pos = spawnPos;
+        hp = maxHp;
+        currentPhase = PHASE_1_TACTICAL;
+        currentState = BOSS_IDLE;
+    }
+
+    void EvaluatePhase() {
+        float hpRatio = hp / maxHp;
+        if (hpRatio <= 0.35f && currentPhase != PHASE_3_ENRAGED) {
+            currentPhase = PHASE_3_ENRAGED;
+            speed = 210.0f; // Faster movement in Phase 3
+        } else if (hpRatio <= 0.65f && hpRatio > 0.35f && currentPhase == PHASE_1_TACTICAL) {
+            currentPhase = PHASE_2_BULLET_HELL;
+            speed = 170.0f;
+        }
+    }
+
+    void Update(float dt, Vector2 playerPos, float& playerHp, ParticleEngine& particles) {
+        if (hp <= 0.0f) return;
+
+        EvaluatePhase();
+
+        // Update Cooldowns
+        if (cooldownTimer > 0.0f) cooldownTimer -= dt;
+
+        // State Machine Behavior Tree
+        switch (currentState) {
+            case BOSS_IDLE:
+            case BOSS_CHASE: {
+                float distToPlayer = Vector2Distance(pos, playerPos);
+                
+                // Move towards player
+                if (distToPlayer > 50.0f) {
+                    Vector2 dir = Vector2Normalize(Vector2Subtract(playerPos, pos));
+                    pos = Vector2Add(pos, Vector2Scale(dir, speed * dt));
+                }
+
+                // Decide next attack when cooldown expires
+                if (cooldownTimer <= 0.0f) {
+                    SelectNextAttack(distToPlayer, playerPos);
+                }
+                break;
+            }
+
+            case BOSS_TELEGRAPHING: {
+                stateTimer -= dt;
+                if (stateTimer <= 0.0f) {
+                    ExecuteAttack(playerPos, particles);
+                    currentState = BOSS_ATTACKING;
+                    stateTimer = 0.4f; // Attack execution duration
+                }
+                break;
+            }
+
+            case BOSS_ATTACKING: {
+                stateTimer -= dt;
+                if (stateTimer <= 0.0f) {
+                    currentState = BOSS_RECOVERY;
+                    stateTimer = (currentPhase == PHASE_3_ENRAGED) ? 0.3f : 0.8f;
+                }
+                break;
+            }
+
+            case BOSS_RECOVERY: {
+                stateTimer -= dt;
+                if (stateTimer <= 0.0f) {
+                    currentState = BOSS_CHASE;
+                    cooldownTimer = (currentPhase == PHASE_3_ENRAGED) ? 0.8f : 1.8f;
+                }
+                break;
+            }
+        }
+
+        // Update Projectiles & Hazards
+        UpdateBullets(dt, playerPos, playerHp, particles);
+        UpdateHazards(dt, playerPos, playerHp, particles);
+    }
+
+    void SelectNextAttack(float distToPlayer, Vector2 playerPos) {
+        currentState = BOSS_TELEGRAPHING;
+
+        if (currentPhase == PHASE_1_TACTICAL) {
+            if (distToPlayer < 120.0f) {
+                currentAttack = ATTACK_MELEE_SLASH;
+                telegraphDuration = 0.8f;
+                telegraphRadius = 100.0f;
+                telegraphTarget = pos;
+            } else {
+                currentAttack = ATTACK_DASH_STRIKE;
+                telegraphDuration = 1.0f;
+                telegraphTarget = playerPos;
+            }
+        } 
+        else if (currentPhase == PHASE_2_BULLET_HELL) {
+            int randChoice = GetRandomValue(0, 100);
+            if (randChoice < 50) {
+                currentAttack = ATTACK_BULLET_RING;
+                telegraphDuration = 1.2f;
+                telegraphRadius = 150.0f;
+                telegraphTarget = pos;
+            } else {
+                currentAttack = ATTACK_LAVA_HAZARD;
+                telegraphDuration = 0.9f;
+                telegraphTarget = playerPos;
+                telegraphRadius = 90.0f;
+            }
+        } 
+        else { // PHASE_3_ENRAGED
+            int randChoice = GetRandomValue(0, 100);
+            if (randChoice < 40) {
+                currentAttack = ATTACK_BULLET_RING;
+                telegraphDuration = 0.7f;
+                telegraphRadius = 180.0f;
+                telegraphTarget = pos;
+            } else if (randChoice < 70) {
+                currentAttack = ATTACK_DASH_STRIKE;
+                telegraphDuration = 0.6f;
+                telegraphTarget = playerPos;
+            } else {
+                currentAttack = ATTACK_LAVA_HAZARD;
+                telegraphDuration = 0.7f;
+                telegraphTarget = playerPos;
+                telegraphRadius = 110.0f;
+            }
+        }
+
+        stateTimer = telegraphDuration;
+    }
+
+    void ExecuteAttack(Vector2 playerPos, ParticleEngine& particles) {
+        switch (currentAttack) {
+            case ATTACK_MELEE_SLASH: {
+                // Slash particles around boss
+                for (int i = 0; i < 24; i++) {
+                    float angle = (float)i * (360.0f / 24.0f) * DEG2RAD;
+                    Vector2 pVel = { cosf(angle) * 180.0f, sinf(angle) * 180.0f };
+                    particles.AddParticle(pos, pVel, RED, 0.4f, 6.0f);
+                }
+                break;
+            }
+
+            case ATTACK_DASH_STRIKE: {
+                // Instantly dash toward telegraph target
+                Vector2 dashDir = Vector2Normalize(Vector2Subtract(telegraphTarget, pos));
+                pos = Vector2Add(pos, Vector2Scale(dashDir, 220.0f));
+                break;
+            }
+
+            case ATTACK_BULLET_RING: {
+                // Spawn 360-degree projectile ring
+                int bulletCount = (currentPhase == PHASE_3_ENRAGED) ? 24 : 16;
+                float speed = (currentPhase == PHASE_3_ENRAGED) ? 240.0f : 180.0f;
+
+                for (int i = 0; i < bulletCount; i++) {
+                    float angle = (float)i * (360.0f / (float)bulletCount) * DEG2RAD;
+                    BossBullet bullet;
+                    bullet.pos = pos;
+                    bullet.vel = { cosf(angle) * speed, sinf(angle) * speed };
+                    bullet.radius = 7.0f;
+                    bullet.lifetime = 4.0f;
+                    bullet.active = true;
+                    bullets.push_back(bullet);
+                }
+                break;
+            }
+
+            case ATTACK_LAVA_HAZARD: {
+                // Spawn persistent floor lava hazard
+                LavaHazard hazard;
+                hazard.pos = telegraphTarget;
+                hazard.radius = telegraphRadius;
+                hazard.duration = 6.0f;
+                hazard.maxDuration = 6.0f;
+                hazard.tickTimer = 0.0f;
+                hazard.active = true;
+                hazards.push_back(hazard);
+                break;
+            }
+        }
+    }
+
+    void UpdateBullets(float dt, Vector2 playerPos, float& playerHp, ParticleEngine& particles) {
+        for (auto& b : bullets) {
+            if (!b.active) continue;
+
+            b.pos = Vector2Add(b.pos, Vector2Scale(b.vel, dt));
+            b.lifetime -= dt;
+
+            if (b.lifetime <= 0.0f) {
+                b.active = false;
+                continue;
+            }
+
+            // Hit test player
+            if (CheckCollisionCircles(b.pos, b.radius, playerPos, 16.0f)) {
+                playerHp = floatMax(0.0f, playerHp - 12.0f);
+                b.active = false;
+
+                for (int i = 0; i < 8; i++) {
+                    Vector2 pVel = { (float)GetRandomValue(-80, 80), (float)GetRandomValue(-80, 80) };
+                    particles.AddParticle(b.pos, pVel, ORANGE, 0.3f, 4.0f);
+                }
+            }
+        }
+    }
+
+    void UpdateHazards(float dt, Vector2 playerPos, float& playerHp, ParticleEngine& particles) {
+        for (auto& h : hazards) {
+            if (!h.active) continue;
+
+            h.duration -= dt;
+            h.tickTimer += dt;
+
+            if (h.duration <= 0.0f) {
+                h.active = false;
+                continue;
+            }
+
+            // Damage player over time if standing in lava
+            if (CheckCollisionCircles(h.pos, h.radius, playerPos, 12.0f)) {
+                if (h.tickTimer >= 0.25f) {
+                    playerHp = floatMax(0.0f, playerHp - 4.0f);
+                    h.tickTimer = 0.0f;
+
+                    particles.AddParticle(playerPos, { 0, -50 }, RED, 0.2f, 5.0f);
+                }
+            }
+        }
+    }
+
+    void Draw() {
+        if (hp <= 0.0f) return;
+
+        // 1. Draw Persistent Lava Floor Hazards
+        for (const auto& h : hazards) {
+            if (!h.active) continue;
+            float alpha = (h.duration / h.maxDuration);
+            DrawCircleV(h.pos, h.radius, ColorAlpha(ORANGE, 0.4f * alpha));
+            DrawCircleLines((int)h.pos.x, (int)h.pos.y, h.radius, ColorAlpha(RED, 0.8f * alpha));
+        }
+
+        // 2. Draw Attack Telegraphs
+        if (currentState == BOSS_TELEGRAPHING) {
+            float progress = 1.0f - (stateTimer / telegraphDuration);
+            
+            if (currentAttack == ATTACK_DASH_STRIKE) {
+                DrawLineEx(pos, telegraphTarget, 4.0f, ColorAlpha(RED, progress));
+                DrawCircleV(telegraphTarget, 12.0f, ColorAlpha(RED, progress * 0.7f));
+            } else if (currentAttack == ATTACK_MELEE_SLASH || currentAttack == ATTACK_BULLET_RING || currentAttack == ATTACK_LAVA_HAZARD) {
+                DrawCircleLines((int)telegraphTarget.x, (int)telegraphTarget.y, telegraphRadius * progress, RED);
+                DrawCircleV(telegraphTarget, telegraphRadius, ColorAlpha(RED, 0.15f * progress));
+            }
+        }
+
+        // 3. Draw Boss Entity Color-coded by Phase
+        Color bossColor = PURPLE;
+        if (currentPhase == PHASE_2_BULLET_HELL) bossColor = ORANGE;
+        else if (currentPhase == PHASE_3_ENRAGED) bossColor = RED;
+
+        DrawCircleV(pos, radius, bossColor);
+        DrawCircleLines((int)pos.x, (int)pos.y, radius + 2.0f, WHITE);
+
+        // 4. Draw Bullets
+        for (const auto& b : bullets) {
+            if (!b.active) continue;
+            DrawCircleV(b.pos, b.radius, GOLD);
+            DrawCircleV(b.pos, b.radius * 0.5f, WHITE);
+        }
+
+        // 5. Boss Phase HUD Bar
+        DrawRectangle((int)pos.x - 40, (int)pos.y - 48, 80, 8, DARKGRAY);
+        DrawRectangle((int)pos.x - 40, (int)pos.y - 48, (int)(80 * (hp / maxHp)), 8, bossColor);
+        DrawRectangleLines((int)pos.x - 40, (int)pos.y - 48, 80, 8, WHITE);
+
+        const char* phaseName = (currentPhase == PHASE_1_TACTICAL) ? "PHASE 1: TACTICAL" :
+                                (currentPhase == PHASE_2_BULLET_HELL) ? "PHASE 2: BULLET-HELL" : "PHASE 3: ENRAGED";
+        DrawText(phaseName, (int)pos.x - 45, (int)pos.y - 62, 10, RAYWHITE);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "CameraManager.h"
+#include "DungeonGenerator.h"
+#include "PostProcessingManager.h"
+#include "BossBehaviorTree.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Multi-Stage Boss AI & Bullet Hell");
+    SetTargetFPS(60);
+
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+    CameraManager cameraMgr(screenW, screenH);
+    DungeonGenerator dungeon;
+    PostProcessingManager postFX;
+
+    postFX.Init(screenW, screenH);
+    dungeon.Generate();
+    
+    player.pos = dungeon.playerSpawnPos;
+    boss.Init(dungeon.bossSpawnPos);
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Testing Keys: Damage Boss
+        if (IsKeyPressed(KEY_K)) boss.hp = floatMax(0.0f, boss.hp - 150.0f);
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+
+        // Update Multi-Stage Boss AI Behavior Tree
+        boss.Update(dt, player.pos, player.health, particles);
+
+        cameraMgr.Update(player.pos, boss.pos, boss.hp > 0, dt);
+
+        // Render Scene to Post-FX Framebuffer
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                dungeon.Draw();
+                boss.Draw();
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.DrawLight(boss.pos, 300.0f, (boss.currentPhase == PHASE_3_ENRAGED) ? RED : ORANGE, 0.9f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // Screen-Space Overlay HUD
+        player.DrawHUD();
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[K] Damage Boss (Force Phase Change) | Dodge Bullet Rings & Lava Hazards!", 
+                 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
