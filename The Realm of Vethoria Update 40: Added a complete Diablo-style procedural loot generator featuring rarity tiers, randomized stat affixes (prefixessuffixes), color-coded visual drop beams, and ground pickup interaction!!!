@@ -1,0 +1,304 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "ParticleEngine.h"
+#include <vector>
+#include <string>
+
+enum ItemRarity {
+    RARITY_COMMON = 0,
+    RARITY_UNCOMMON,
+    RARITY_RARE,
+    RARITY_EPIC,
+    RARITY_LEGENDARY
+};
+
+enum ItemType {
+    ITEM_WEAPON = 0,
+    ITEM_ARMOR,
+    ITEM_AMULET
+};
+
+struct ItemAffix {
+    std::string name;
+    float attackBonus;
+    float defenseBonus;
+    float speedBonus;
+    float lifestealBonus;
+};
+
+struct EquipmentItem {
+    std::string name;
+    ItemType type;
+    ItemRarity rarity;
+    Color rarityColor;
+    float attackPower;
+    float defensePower;
+    float speedPower;
+    float lifesteal;
+    int goldValue;
+};
+
+struct GroundLootDrop {
+    Vector2 pos;
+    EquipmentItem item;
+    float beamAnimTimer;
+    bool active;
+};
+
+class LootGenerator {
+private:
+    std::vector<ItemAffix> prefixes = {
+        { "Blazing", 15.0f, 0.0f, 0.0f, 0.0f },
+        { "Vampiric", 5.0f, 0.0f, 0.0f, 0.08f },
+        { "Sturdy", 0.0f, 18.0f, 0.0f, 0.0f },
+        { "Swift", 0.0f, 0.0f, 25.0f, 0.0f },
+        { "Titan's", 25.0f, 25.0f, 0.0f, 0.0f }
+    };
+
+    std::vector<ItemAffix> suffixes = {
+        { "of the Bear", 0.0f, 12.0f, 0.0f, 0.0f },
+        { "of Haste", 0.0f, 0.0f, 20.0f, 0.0f },
+        { "of Carnage", 20.0f, 0.0f, 0.0f, 0.0f },
+        { "of Siphoning", 0.0f, 0.0f, 0.0f, 0.05f },
+        { "of the Phoenix", 10.0f, 10.0f, 0.0f, 0.04f }
+    };
+
+public:
+    std::vector<GroundLootDrop> groundDrops;
+
+    Color GetRarityColor(ItemRarity rarity) {
+        switch (rarity) {
+            case RARITY_COMMON:    return LIGHTGRAY;
+            case RARITY_UNCOMMON:  return LIME;
+            case RARITY_RARE:      return SKYBLUE;
+            case RARITY_EPIC:      return PURPLE;
+            case RARITY_LEGENDARY: return GOLD;
+        }
+        return WHITE;
+    }
+
+    EquipmentItem GenerateRandomItem(ItemRarity guaranteedRarity = RARITY_COMMON, bool forceGuarantee = false) {
+        EquipmentItem item;
+        
+        // 1. Roll Rarity (if not forced)
+        if (!forceGuarantee) {
+            int roll = GetRandomValue(1, 100);
+            if (roll <= 50) item.rarity = RARITY_COMMON;
+            else if (roll <= 75) item.rarity = RARITY_UNCOMMON;
+            else if (roll <= 90) item.rarity = RARITY_RARE;
+            else if (roll <= 98) item.rarity = RARITY_EPIC;
+            else item.rarity = RARITY_LEGENDARY;
+        } else {
+            item.rarity = guaranteedRarity;
+        }
+
+        item.rarityColor = GetRarityColor(item.rarity);
+        item.type = (ItemType)GetRandomValue(0, 2);
+
+        // Base Stats by Type
+        float baseAtk = (item.type == ITEM_WEAPON) ? 15.0f : 2.0f;
+        float baseDef = (item.type == ITEM_ARMOR) ? 15.0f : 2.0f;
+        float baseSpd = (item.type == ITEM_AMULET) ? 10.0f : 0.0f;
+
+        // Rarity Multiplier
+        float rarityMult = 1.0f + ((int)item.rarity * 0.4f);
+
+        std::string baseName = (item.type == ITEM_WEAPON) ? "Broadsword" :
+                               (item.type == ITEM_ARMOR) ? "Plate Cuirass" : "Amulet of Power";
+
+        std::string prefixName = "";
+        std::string suffixName = "";
+
+        // Affixes based on Rarity
+        item.attackPower = baseAtk * rarityMult;
+        item.defensePower = baseDef * rarityMult;
+        item.speedPower = baseSpd * rarityMult;
+        item.lifesteal = 0.0f;
+
+        if (item.rarity >= RARITY_UNCOMMON) {
+            int pIndex = GetRandomValue(0, (int)prefixes.size() - 1);
+            prefixName = prefixes[pIndex].name + " ";
+            item.attackPower += prefixes[pIndex].attackBonus;
+            item.defensePower += prefixes[pIndex].defenseBonus;
+            item.speedPower += prefixes[pIndex].speedBonus;
+            item.lifesteal += prefixes[pIndex].lifestealBonus;
+        }
+
+        if (item.rarity >= RARITY_RARE) {
+            int sIndex = GetRandomValue(0, (int)suffixes.size() - 1);
+            suffixName = " " + suffixes[sIndex].name;
+            item.attackPower += suffixes[sIndex].attackBonus;
+            item.defensePower += suffixes[sIndex].defenseBonus;
+            item.speedPower += suffixes[sIndex].speedBonus;
+            item.lifesteal += suffixes[sIndex].lifestealBonus;
+        }
+
+        item.name = prefixName + baseName + suffixName;
+        item.goldValue = (int)(50 * rarityMult + item.attackPower + item.defensePower);
+
+        return item;
+    }
+
+    void SpawnDrop(Vector2 pos, ItemRarity minRarity = RARITY_COMMON, bool forceGuarantee = false) {
+        GroundLootDrop drop;
+        drop.pos = pos;
+        drop.item = GenerateRandomItem(minRarity, forceGuarantee);
+        drop.beamAnimTimer = 0.0f;
+        drop.active = true;
+        groundDrops.push_back(drop);
+    }
+
+    void Update(float dt, Vector2 playerPos, ParticleEngine& particles) {
+        for (auto& drop : groundDrops) {
+            if (!drop.active) continue;
+
+            drop.beamAnimTimer += dt * 3.0f;
+
+            // Spawn floating ambient particles for Rare+ items
+            if (drop.item.rarity >= RARITY_RARE && GetRandomValue(0, 100) < 30) {
+                Vector2 pVel = { (float)GetRandomValue(-20, 20), (float)GetRandomValue(-40, -10) };
+                particles.AddParticle(drop.pos, pVel, drop.item.rarityColor, 0.5f, 3.0f);
+            }
+
+            // Pickup Interaction Radius
+            if (CheckCollisionCircles(drop.pos, 24.0f, playerPos, 16.0f)) {
+                // Flash Pickup Particles
+                for (int i = 0; i < 16; i++) {
+                    float angle = (float)i * (360.0f / 16.0f) * DEG2RAD;
+                    Vector2 pVel = { cosf(angle) * 80.0f, sinf(angle) * 80.0f };
+                    particles.AddParticle(drop.pos, pVel, drop.item.rarityColor, 0.4f, 5.0f);
+                }
+                drop.active = false; // Item picked up
+            }
+        }
+    }
+
+    void DrawWorldDrops() {
+        for (const auto& drop : groundDrops) {
+            if (!drop.active) continue;
+
+            float pulse = (sinf(drop.beamAnimTimer) * 0.5f + 0.5f);
+
+            // 1. Vertical Loot Beam (Diablo-style)
+            Color beamColor = ColorAlpha(drop.item.rarityColor, 0.45f + pulse * 0.25f);
+            DrawRectanglePro(
+                Rectangle{ drop.pos.x - 4.0f, drop.pos.y - 120.0f, 8.0f, 120.0f },
+                Vector2{ 0, 0 }, 0.0f, beamColor
+            );
+
+            // 2. Beam Base Circle Glow
+            DrawCircleV(drop.pos, 12.0f + pulse * 4.0f, ColorAlpha(drop.item.rarityColor, 0.3f));
+            DrawCircleV(drop.pos, 6.0f, drop.item.rarityColor);
+
+            // 3. Floating Item Label Text
+            int fontSize = 10;
+            int textWidth = MeasureText(drop.item.name.c_str(), fontSize);
+            Vector2 labelPos = { drop.pos.x - textWidth / 2.0f, drop.pos.y - 30.0f - pulse * 4.0f };
+
+            DrawRectangle((int)labelPos.x - 4, (int)labelPos.y - 2, textWidth + 8, fontSize + 4, ColorAlpha(BLACK, 0.85f));
+            DrawRectangleLines((int)labelPos.x - 4, (int)labelPos.y - 2, textWidth + 8, fontSize + 4, drop.item.rarityColor);
+            DrawText(drop.item.name.c_str(), (int)labelPos.x, (int)labelPos.y, fontSize, drop.item.rarityColor);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "EnemyWaveManager.h"
+#include "TextureManager.h"
+#include "SoundManager.h"
+#include "CameraManager.h"
+#include "DungeonGenerator.h"
+#include "PostProcessingManager.h"
+#include "BossBehaviorTree.h"
+#include "LootSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Diablo-Style Procedural Loot & Beams");
+    SetTargetFPS(60);
+
+    TextureManager textureMgr;
+    textureMgr.LoadAll();
+
+    SoundManager soundMgr;
+    soundMgr.Init();
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    EnemyWaveManager waves;
+    CameraManager cameraMgr(screenW, screenH);
+    DungeonGenerator dungeon;
+    PostProcessingManager postFX;
+    LootGenerator loot;
+
+    postFX.Init(screenW, screenH);
+    dungeon.Generate();
+    
+    player.pos = dungeon.playerSpawnPos;
+    boss.Init(dungeon.bossSpawnPos);
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Testing Keys: Spawn Procedural Loot
+        if (IsKeyPressed(KEY_L)) {
+            loot.SpawnDrop(player.pos);
+        }
+        if (IsKeyPressed(KEY_B)) {
+            // Guaranteed Legendary Loot Beam from Boss
+            loot.SpawnDrop(boss.pos, RARITY_LEGENDARY, true);
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+        boss.Update(dt, player.pos, player.health, particles);
+
+        // Update Loot Interactions
+        loot.Update(dt, player.pos, particles);
+
+        cameraMgr.Update(player.pos, boss.pos, boss.hp > 0, dt);
+
+        // Render Scene to Post-FX Framebuffer
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                dungeon.Draw();
+                boss.Draw();
+                
+                // Draw Ground Loot Beams & World Drops
+                loot.DrawWorldDrops();
+
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                for (const auto& drop : loot.groundDrops) {
+                    if (drop.active) {
+                        lighting.DrawLight(drop.pos, 140.0f, drop.item.rarityColor, 0.75f);
+                    }
+                }
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // Screen-Space Overlay HUD
+        player.DrawHUD();
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[L] Spawn Random Loot Drop | [B] Spawn Boss Legendary Beam | Walk over loot to collect", 
+                 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
