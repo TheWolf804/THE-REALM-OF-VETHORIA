@@ -1,0 +1,303 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "LootSystem.h"
+#include <vector>
+#include <string>
+
+enum NpcType {
+    NPC_QUEST_GIVER,
+    NPC_MERCHANT
+};
+
+struct DialogueOption {
+    std::string text;
+    int nextNodeId; // -1 to exit dialogue
+    int questIdToAccept;
+};
+
+struct DialogueNode {
+    int id;
+    std::string speakerName;
+    std::string text;
+    std::vector<DialogueOption> options;
+};
+
+struct Quest {
+    int id;
+    std::string title;
+    std::string description;
+    int killTarget;
+    int currentKills;
+    int goldReward;
+    bool active;
+    bool completed;
+};
+
+struct NPC {
+    Vector2 pos;
+    std::string name;
+    NpcType type;
+    int initialDialogueNodeId;
+    Color color;
+};
+
+class DialogueAndTownManager {
+public:
+    std::vector<NPC> npcs;
+    std::vector<DialogueNode> dialogueNodes;
+    std::vector<EquipmentItem> shopInventory;
+    Quest activeQuest = { 1, "Slay the Dungeon Boss", "Clear the dungeon and eliminate the Void Warden.", 1, 0, 500, false, false };
+
+    bool inDialogue = false;
+    bool inShop = false;
+    int currentDialogueNodeId = 0;
+    NPC* currentInteractingNpc = nullptr;
+
+    void InitHub() {
+        // Spawn NPCs in Town Hub
+        npcs.push_back({ { 200.0f, 300.0f }, "Elder Vaelen", NPC_QUEST_GIVER, 0, GOLD });
+        npcs.push_back({ { 500.0f, 300.0f }, "Blacksmith Kael", NPC_MERCHANT, 10, SKYBLUE });
+
+        // Build Branching Dialogue Trees
+        // --- Elder Vaelen (Quest Giver) ---
+        DialogueNode node0;
+        node0.id = 0;
+        node0.speakerName = "Elder Vaelen";
+        node0.text = "Greetings, hero of Vethoria. Darkness spreads below our sanctuary. Will you aid us?";
+        node0.options.push_back({ "What must be done?", 1, -1 });
+        node0.options.push_back({ "I must prepare first.", -1, -1 });
+        dialogueNodes.push_back(node0);
+
+        DialogueNode node1;
+        node1.id = 1;
+        node1.speakerName = "Elder Vaelen";
+        node1.text = "Descend into the BSP Dungeon and vanquish the Void Warden. I will reward you with 500 Gold.";
+        node1.options.push_back({ "I accept the bounty.", -1, 1 }); // Accepts quest 1
+        node1.options.push_back({ "Sounds too dangerous.", -1, -1 });
+        dialogueNodes.push_back(node1);
+
+        // --- Blacksmith Kael (Merchant) ---
+        DialogueNode node10;
+        node10.id = 10;
+        node10.speakerName = "Blacksmith Kael";
+        node10.text = "Need sharper steel or sturdy plate armor? Browse my wares!";
+        node10.options.push_back({ "Show me your inventory.", -2, -1 }); // -2 triggers shop UI
+        node10.options.push_back({ "Just looking around.", -1, -1 });
+        dialogueNodes.push_back(node10);
+
+        // Populate Shop Wares
+        LootGenerator gen;
+        shopInventory.push_back(gen.GenerateRandomItem(RARITY_UNCOMMON, true));
+        shopInventory.push_back(gen.GenerateRandomItem(RARITY_RARE, true));
+        shopInventory.push_back(gen.GenerateRandomItem(RARITY_EPIC, true));
+    }
+
+    DialogueNode* GetNode(int id) {
+        for (auto& node : dialogueNodes) {
+            if (node.id == id) return &node;
+        }
+        return nullptr;
+    }
+
+    void Update(Vector2 playerPos, int& playerGold) {
+        if (inDialogue || inShop) return;
+
+        // Check Proximity Interact Key
+        for (auto& npc : npcs) {
+            if (Vector2Distance(playerPos, npc.pos) < 40.0f && IsKeyPressed(KEY_E)) {
+                currentInteractingNpc = &npc;
+                currentDialogueNodeId = npc.initialDialogueNodeId;
+                inDialogue = true;
+                break;
+            }
+        }
+    }
+
+    void DrawHubWorld(Vector2 playerPos) {
+        // Draw Hub Floor & Town Walls
+        DrawRectangle(100, 100, 600, 400, GetColor(0x22222EFF));
+        DrawRectangleLines(100, 100, 600, 400, GRAY);
+        DrawText("TOWN HUB - VETHORIA SANCTUARY", 120, 115, 14, LIGHTGRAY);
+
+        // Draw NPCs
+        for (const auto& npc : npcs) {
+            DrawCircleV(npc.pos, 18.0f, npc.color);
+            DrawCircleLines((int)npc.pos.x, (int)npc.pos.y, 20.0f, WHITE);
+            DrawText(npc.name.c_str(), (int)npc.pos.x - 35, (int)npc.pos.y - 32, 11, RAYWHITE);
+
+            // Interaction Prompt
+            if (Vector2Distance(playerPos, npc.pos) < 40.0f && !inDialogue && !inShop) {
+                DrawRectangle((int)npc.pos.x - 30, (int)npc.pos.y + 22, 60, 18, ColorAlpha(BLACK, 0.8f));
+                DrawText("[E] Talk", (int)npc.pos.x - 22, (int)npc.pos.y + 25, 11, YELLOW);
+            }
+        }
+    }
+
+    void DrawDialogueAndShopUI(int screenW, int screenH, int& playerGold) {
+        if (inDialogue) {
+            DialogueNode* node = GetNode(currentDialogueNodeId);
+            if (!node) { inDialogue = false; return; }
+
+            int boxW = 700, boxH = 200;
+            int boxX = (screenW - boxW) / 2;
+            int boxY = screenH - boxH - 40;
+
+            DrawRectangle(boxX, boxY, boxW, boxH, ColorAlpha(BLACK, 0.9f));
+            DrawRectangleLines(boxX, boxY, boxW, boxH, GOLD);
+
+            DrawText(node->speakerName.c_str(), boxX + 20, boxY + 15, 18, GOLD);
+            DrawText(node->text.c_str(), boxX + 20, boxY + 45, 14, RAYWHITE);
+
+            // Options
+            int optionY = boxY + 95;
+            for (size_t i = 0; i < node->options.size(); i++) {
+                std::string optionText = TextFormat("[%i] %s", (int)i + 1, node->options[i].text.c_str());
+                DrawText(optionText.c_str(), boxX + 30, optionY, 13, SKYBLUE);
+
+                if (IsKeyPressed(KEY_ONE + (int)i)) {
+                    if (node->options[i].questIdToAccept == 1) {
+                        activeQuest.active = true;
+                    }
+
+                    int next = node->options[i].nextNodeId;
+                    if (next == -2) {
+                        inDialogue = false;
+                        inShop = true;
+                    } else if (next == -1) {
+                        inDialogue = false;
+                    } else {
+                        currentDialogueNodeId = next;
+                    }
+                }
+                optionY += 28;
+            }
+        }
+
+        if (inShop) {
+            int shopW = 500, shopH = 360;
+            int shopX = (screenW - shopW) / 2;
+            int shopY = (screenH - shopH) / 2;
+
+            DrawRectangle(shopX, shopY, shopW, shopH, ColorAlpha(GetColor(0x151520FF), 0.95f));
+            DrawRectangleLines(shopX, shopY, shopW, shopH, SKYBLUE);
+
+            DrawText("BLACKSMITH KAEL'S SHOP", shopX + 20, shopY + 15, 18, SKYBLUE);
+            DrawText(TextFormat("Your Gold: %i G", playerGold), shopX + 320, shopY + 18, 14, YELLOW);
+
+            int itemY = shopY + 60;
+            for (size_t i = 0; i < shopInventory.size(); i++) {
+                const auto& item = shopInventory[i];
+                DrawRectangle(shopX + 20, itemY, shopW - 40, 60, ColorAlpha(BLACK, 0.6f));
+                DrawRectangleLines(shopX + 20, itemY, shopW - 40, 60, item.rarityColor);
+
+                DrawText(item.name.c_str(), shopX + 30, itemY + 10, 14, item.rarityColor);
+                DrawText(TextFormat("ATK +%.0f | DEF +%.0f | Cost: %i G", item.attackPower, item.defensePower, item.goldValue), 
+                         shopX + 30, itemY + 32, 12, LIGHTGRAY);
+
+                DrawRectangle(shopX + 380, itemY + 15, 80, 30, DARKBLUE);
+                DrawRectangleLines(shopX + 380, itemY + 15, 80, 30, WHITE);
+                DrawText(TextFormat("[%i] Buy", (int)i + 1), shopX + 400, itemY + 22, 12, WHITE);
+
+                if (IsKeyPressed(KEY_ONE + (int)i) && playerGold >= item.goldValue) {
+                    playerGold -= item.goldValue;
+                    shopInventory.erase(shopInventory.begin() + i);
+                    break;
+                }
+                itemY += 72;
+            }
+
+            DrawText("[ESC] Close Shop", shopX + 20, shopY + shopH - 30, 12, GRAY);
+            if (IsKeyPressed(KEY_ESCAPE)) inShop = false;
+        }
+    }
+
+    void DrawQuestTrackerHUD() {
+        if (activeQuest.active) {
+            DrawRectangle(10, 80, 220, 60, ColorAlpha(BLACK, 0.7f));
+            DrawRectangleLines(10, 80, 220, 60, GOLD);
+            DrawText(activeQuest.title.c_str(), 18, 88, 12, GOLD);
+            DrawText(TextFormat("Boss Defeated: %i/%i", activeQuest.currentKills, activeQuest.killTarget), 
+                     18, 108, 11, RAYWHITE);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "BossBehaviorTree.h"
+#include "LootSystem.h"
+#include "DialogueAndTownSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Town Hub & Branching Dialogue");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    LootGenerator loot;
+    DialogueAndTownManager town;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+
+    player.pos = { 350.0f, 300.0f }; // Spawn in Town Hub
+    boss.Init({ 1200.0f, 1200.0f });
+
+    int playerGold = 250;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Dialogue & Town Interaction Update
+        town.Update(player.pos, playerGold);
+
+        if (!town.inDialogue && !town.inShop) {
+            player.Update(dt, particles);
+        }
+        
+        particles.Update(dt);
+        loot.Update(dt, player.pos, particles);
+
+        cameraMgr.Update(player.pos, boss.pos, false, dt);
+
+        // Render Scene to Framebuffer
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                loot.DrawWorldDrops();
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                for (const auto& npc : town.npcs) {
+                    lighting.DrawLight(npc.pos, 180.0f, npc.color, 0.7f);
+                }
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // Dialogue, Shop & Quest Overlay
+        town.DrawDialogueAndShopUI(screenW, screenH, playerGold);
+        town.DrawQuestTrackerHUD();
+        player.DrawHUD();
+
+        EndDrawing();
+    }
+
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+
+};
