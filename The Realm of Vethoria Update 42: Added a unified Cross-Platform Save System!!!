@@ -1,0 +1,279 @@
+#pragma once
+#include "raylib.h"
+#include "LootSystem.h"
+#include "DialogueAndTownSystem.h"
+#include <string>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
+struct PlayerSaveData {
+    int level = 1;
+    int gold = 100;
+    float maxHealth = 100.0f;
+    float currentHealth = 100.0f;
+    bool questActive = false;
+    bool questCompleted = false;
+    int questKillCount = 0;
+    std::vector<EquipmentItem> inventory;
+};
+
+class SaveManager {
+public:
+    static std::string Serialize(const PlayerSaveData& data) {
+        std::stringstream ss;
+        ss << "{\n";
+        ss << "  \"level\": " << data.level << ",\n";
+        ss << "  \"gold\": " << data.gold << ",\n";
+        ss << "  \"maxHealth\": " << data.maxHealth << ",\n";
+        ss << "  \"currentHealth\": " << data.currentHealth << ",\n";
+        ss << "  \"questActive\": " << (data.questActive ? "true" : "false") << ",\n";
+        ss << "  \"questCompleted\": " << (data.questCompleted ? "true" : "false") << ",\n";
+        ss << "  \"questKillCount\": " << data.questKillCount << ",\n";
+        
+        // Inventory Array
+        ss << "  \"inventory\": [\n";
+        for (size_t i = 0; i < data.inventory.size(); i++) {
+            const auto& item = data.inventory[i];
+            ss << "    {\n";
+            ss << "      \"name\": \"" << item.name << "\",\n";
+            ss << "      \"rarity\": " << (int)item.rarity << ",\n";
+            ss << "      \"type\": " << (int)item.type << ",\n";
+            ss << "      \"attack\": " << item.attackPower << ",\n";
+            ss << "      \"defense\": " << item.defensePower << ",\n";
+            ss << "      \"goldValue\": " << item.goldValue << "\n";
+            ss << "    }" << (i < data.inventory.size() - 1 ? "," : "") << "\n";
+        }
+        ss << "  ]\n";
+        ss << "}";
+        return ss.str();
+    }
+
+    static void Save(const PlayerSaveData& data) {
+        std::string jsonStr = Serialize(data);
+
+#ifdef __EMSCRIPTEN__
+        // WASM / Browser LocalStorage & IndexedDB Persistence
+        EM_ASM({
+            const jsonString = UTF8ToString($0);
+            try {
+                localStorage.setItem("vethoria_savegame", jsonString);
+                console.log("[SaveManager] Game state saved to browser storage.");
+            } catch (e) {
+                console.error("[SaveManager] Failed to write to storage:", e);
+            }
+        }, jsonStr.c_str());
+#else
+        // Desktop File I/O
+        std::ofstream outFile("savegame.json");
+        if (outFile.is_open()) {
+            outFile << jsonStr;
+            outFile.close();
+            TraceLog(LOG_INFO, "[SaveManager] Game saved to savegame.json");
+        }
+#endif
+    }
+
+    static bool Load(PlayerSaveData& outData) {
+        std::string jsonStr = "";
+
+#ifdef __EMSCRIPTEN__
+        char* loadedStr = (char*)EM_ASM_PTR({
+            const data = localStorage.getItem("vethoria_savegame");
+            if (!data) return 0;
+            const lengthBytes = lengthBytesUTF8(data) + 1;
+            const stringOnHeap = _malloc(lengthBytes);
+            stringToUTF8(data, stringOnHeap, lengthBytes);
+            return stringOnHeap;
+        });
+
+        if (loadedStr != 0) {
+            jsonStr = std::string(loadedStr);
+            free(loadedStr);
+        }
+#else
+        std::ifstream inFile("savegame.json");
+        if (inFile.is_open()) {
+            std::stringstream buffer;
+            buffer << inFile.rdbuf();
+            jsonStr = buffer.str();
+            inFile.close();
+        }
+#endif
+
+        if (jsonStr.empty()) return false;
+
+        // Parse key JSON fields
+        outData.level = ParseIntField(jsonStr, "level", 1);
+        outData.gold = ParseIntField(jsonStr, "gold", 100);
+        outData.maxHealth = ParseFloatField(jsonStr, "maxHealth", 100.0f);
+        outData.currentHealth = ParseFloatField(jsonStr, "currentHealth", 100.0f);
+        outData.questActive = ParseBoolField(jsonStr, "questActive", false);
+        outData.questCompleted = ParseBoolField(jsonStr, "questCompleted", false);
+        outData.questKillCount = ParseIntField(jsonStr, "questKillCount", 0);
+
+        TraceLog(LOG_INFO, "[SaveManager] Game state loaded successfully!");
+        return true;
+    }
+
+private:
+    static int ParseIntField(const std::string& json, const std::string& key, int defaultVal) {
+        size_t pos = json.find("\"" + key + "\":");
+        if (pos == std::string::npos) return defaultVal;
+        return std::stoi(json.substr(pos + key.length() + 3));
+    }
+
+    static float ParseFloatField(const std::string& json, const std::string& key, float defaultVal) {
+        size_t pos = json.find("\"" + key + "\":");
+        if (pos == std::string::npos) return defaultVal;
+        return std::stof(json.substr(pos + key.length() + 3));
+    }
+
+    static bool ParseBoolField(const std::string& json, const std::string& key, bool defaultVal) {
+        size_t pos = json.find("\"" + key + "\":");
+        if (pos == std::string::npos) return defaultVal;
+        std::string val = json.substr(pos + key.length() + 3, 5);
+        return (val.find("true") != std::string::npos);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "LootSystem.h"
+#include "DialogueAndTownSystem.h"
+#include "SaveManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Cross-Platform Save System");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    LootGenerator loot;
+    DialogueAndTownManager town;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+
+    player.pos = { 350.0f, 300.0f };
+    int playerGold = 250;
+    std::vector<EquipmentItem> playerInventory;
+
+    // Save/Load Banner Notification
+    std::string bannerMsg = "";
+    float bannerTimer = 0.0f;
+
+    // Try Auto-Loading on Game Start
+    PlayerSaveData initialData;
+    if (SaveManager::Load(initialData)) {
+        player.health = initialData.currentHealth;
+        player.maxHealth = initialData.maxHealth;
+        playerGold = initialData.gold;
+        town.activeQuest.active = initialData.questActive;
+        town.activeQuest.completed = initialData.questCompleted;
+        town.activeQuest.currentKills = initialData.questKillCount;
+        playerInventory = initialData.inventory;
+
+        bannerMsg = "Auto-Loaded Saved Profile!";
+        bannerTimer = 3.0f;
+    }
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        if (bannerTimer > 0.0f) bannerTimer -= dt;
+
+        // Manual Save Hotkey [F5]
+        if (IsKeyPressed(KEY_F5)) {
+            PlayerSaveData saveData;
+            saveData.level = 5;
+            saveData.gold = playerGold;
+            saveData.maxHealth = player.maxHealth;
+            saveData.currentHealth = player.health;
+            saveData.questActive = town.activeQuest.active;
+            saveData.questCompleted = town.activeQuest.completed;
+            saveData.questKillCount = town.activeQuest.currentKills;
+            saveData.inventory = playerInventory;
+
+            SaveManager::Save(saveData);
+            bannerMsg = "Game State Saved Successfully! [F5]";
+            bannerTimer = 3.0f;
+        }
+
+        // Manual Load Hotkey [F9]
+        if (IsKeyPressed(KEY_F9)) {
+            PlayerSaveData loadData;
+            if (SaveManager::Load(loadData)) {
+                player.health = loadData.currentHealth;
+                player.maxHealth = loadData.maxHealth;
+                playerGold = loadData.gold;
+                town.activeQuest.active = loadData.questActive;
+                town.activeQuest.completed = loadData.questCompleted;
+                town.activeQuest.currentKills = loadData.questKillCount;
+                playerInventory = loadData.inventory;
+
+                bannerMsg = "Game State Loaded! [F9]";
+            } else {
+                bannerMsg = "No Save Game Found!";
+            }
+            bannerTimer = 3.0f;
+        }
+
+        town.Update(player.pos, playerGold);
+        if (!town.inDialogue && !town.inShop) {
+            player.Update(dt, particles);
+        }
+        
+        particles.Update(dt);
+        loot.Update(dt, player.pos, particles);
+
+        cameraMgr.Update(player.pos, player.pos, false, dt);
+
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                loot.DrawWorldDrops();
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        town.DrawDialogueAndShopUI(screenW, screenH, playerGold);
+        town.DrawQuestTrackerHUD();
+        player.DrawHUD();
+
+        // Banner Overlay for Save/Load feedback
+        if (bannerTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 200, 20, 400, 36, ColorAlpha(BLACK, 0.85f));
+            DrawRectangleLines(screenW / 2 - 200, 20, 400, 36, GREEN);
+            DrawText(bannerMsg.c_str(), screenW / 2 - MeasureText(bannerMsg.c_str(), 14) / 2, 30, 14, GREEN);
+        }
+
+        DrawRectangle(0, screenH - 30, screenW, 30, GetColor(0x12121AFF));
+        DrawText("[F5] Save Game | [F9] Load Game | WASD Move | [E] Interact", 20, screenH - 22, 13, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
