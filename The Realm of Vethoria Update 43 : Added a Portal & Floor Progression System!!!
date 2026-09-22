@@ -1,0 +1,257 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "ParticleEngine.h"
+#include "DungeonGenerator.h"
+#include <cmath>
+
+enum GameScene {
+    SCENE_TOWN_HUB,
+    SCENE_DUNGEON
+};
+
+struct Portal {
+    Vector2 pos;
+    float radius = 28.0f;
+    float animTimer = 0.0f;
+    Color color = PURPLE;
+    bool active = true;
+    bool isExitPortal = false; // False = Enter Dungeon; True = Return to Hub
+};
+
+class PortalManager {
+public:
+    GameScene currentScene = SCENE_TOWN_HUB;
+    int currentFloor = 1;
+
+    Portal hubDungeonPortal = { { 600.0f, 250.0f }, 28.0f, 0.0f, PURPLE, true, false };
+    Portal dungeonReturnPortal = { { 0.0f, 0.0f }, 28.0f, 0.0f, CYAN, false, true };
+
+    // Transition Fade State
+    bool isTransitioning = false;
+    float transitionAlpha = 0.0f;
+    bool fadeOut = true;
+    GameScene targetScene = SCENE_DUNGEON;
+
+    float GetDifficultyMultiplier() const {
+        return 1.0f + ((float)currentFloor - 1.0f) * 0.35f; // 35% damage & HP scaling per floor
+    }
+
+    void SpawnDungeonReturnPortal(Vector2 bossDeathPos) {
+        dungeonReturnPortal.pos = bossDeathPos;
+        dungeonReturnPortal.active = true;
+    }
+
+    void TriggerTransition(GameScene newScene) {
+        if (isTransitioning) return;
+        isTransitioning = true;
+        fadeOut = true;
+        transitionAlpha = 0.0f;
+        targetScene = newScene;
+    }
+
+    void Update(float dt, Vector2& playerPos, DungeonGenerator& dungeon, ParticleEngine& particles) {
+        // Update Portal Visual Animations
+        if (hubDungeonPortal.active) hubDungeonPortal.animTimer += dt * 3.0f;
+        if (dungeonReturnPortal.active) dungeonReturnPortal.animTimer += dt * 3.0f;
+
+        // Emit Portal Particles
+        Portal* activePortal = (currentScene == SCENE_TOWN_HUB) ? &hubDungeonPortal : &dungeonReturnPortal;
+        if (activePortal->active && GetRandomValue(0, 100) < 40) {
+            float angle = (float)GetRandomValue(0, 360) * DEG2RAD;
+            float speed = (float)GetRandomValue(30, 70);
+            Vector2 pVel = { cosf(angle) * speed, sinf(angle) * speed };
+            particles.AddParticle(activePortal->pos, pVel, activePortal->color, 0.6f, 4.0f);
+        }
+
+        // Handle Player Interaction with Active Portals
+        if (!isTransitioning) {
+            if (currentScene == SCENE_TOWN_HUB) {
+                if (CheckCollisionCircles(playerPos, 16.0f, hubDungeonPortal.pos, hubDungeonPortal.radius)) {
+                    if (IsKeyPressed(KEY_E)) {
+                        TriggerTransition(SCENE_DUNGEON);
+                    }
+                }
+            } else if (currentScene == SCENE_DUNGEON && dungeonReturnPortal.active) {
+                if (CheckCollisionCircles(playerPos, 16.0f, dungeonReturnPortal.pos, dungeonReturnPortal.radius)) {
+                    if (IsKeyPressed(KEY_E)) {
+                        currentFloor++; // Advance to next floor upon return/clearance
+                        TriggerTransition(SCENE_TOWN_HUB);
+                    }
+                }
+            }
+        }
+
+        // Handle Screen Fade In/Out Transitions
+        if (isTransitioning) {
+            if (fadeOut) {
+                transitionAlpha += dt * 2.5f;
+                if (transitionAlpha >= 1.0f) {
+                    transitionAlpha = 1.0f;
+                    fadeOut = false;
+
+                    // Perform Scene Switch logic at peak blackout
+                    currentScene = targetScene;
+                    if (currentScene == SCENE_DUNGEON) {
+                        dungeon.Generate();
+                        playerPos = dungeon.playerSpawnPos;
+                        dungeonReturnPortal.active = false; // Hidden until boss is defeated
+                    } else {
+                        playerPos = { 350.0f, 300.0f }; // Reset to Town Hub spawn
+                    }
+                }
+            } else {
+                transitionAlpha -= dt * 2.5f;
+                if (transitionAlpha <= 0.0f) {
+                    transitionAlpha = 0.0f;
+                    isTransitioning = false;
+                }
+            }
+        }
+    }
+
+    void DrawPortalWorldSpace(Vector2 playerPos) {
+        Portal* portalToDraw = (currentScene == SCENE_TOWN_HUB) ? &hubDungeonPortal : &dungeonReturnPortal;
+        if (!portalToDraw->active) return;
+
+        float pulse = (sinf(portalToDraw->animTimer) * 0.5f + 0.5f);
+
+        // Portal Swirl Rings
+        DrawCircleV(portalToDraw->pos, portalToDraw->radius + pulse * 6.0f, ColorAlpha(portalToDraw->color, 0.35f));
+        DrawCircleV(portalToDraw->pos, portalToDraw->radius * 0.7f, portalToDraw->color);
+        DrawCircleV(portalToDraw->pos, portalToDraw->radius * 0.3f, WHITE);
+        DrawCircleLines((int)portalToDraw->pos.x, (int)portalToDraw->pos.y, portalToDraw->radius + 4.0f, WHITE);
+
+        // Interact Prompt
+        if (CheckCollisionCircles(playerPos, 16.0f, portalToDraw->pos, portalToDraw->radius)) {
+            const char* label = portalToDraw->isExitPortal ? "[E] Return to Town" : "[E] Enter Dungeon";
+            DrawRectangle((int)portalToDraw->pos.x - 50, (int)portalToDraw->pos.y - 45, 100, 20, ColorAlpha(BLACK, 0.85f));
+            DrawText(label, (int)portalToDraw->pos.x - MeasureText(label, 11) / 2, (int)portalToDraw->pos.y - 41, 11, YELLOW);
+        }
+    }
+
+    void DrawTransitionOverlay(int screenW, int screenH) {
+        if (isTransitioning || transitionAlpha > 0.0f) {
+            DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, transitionAlpha));
+        }
+    }
+
+    void DrawFloorHUD(int screenW) {
+        if (currentScene == SCENE_DUNGEON) {
+            DrawRectangle(screenW - 200, 10, 190, 45, ColorAlpha(BLACK, 0.75f));
+            DrawRectangleLines(screenW - 200, 10, 190, 45, PURPLE);
+            DrawText(TextFormat("DUNGEON FLOOR %i", currentFloor), screenW - 185, 18, 13, PURPLE);
+            DrawText(TextFormat("Enemy Scaling: x%.2f", GetDifficultyMultiplier()), screenW - 185, 34, 11, RAYWHITE);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "LootSystem.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Portal Transitions & Dungeon Scaling");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    LootGenerator loot;
+    DialogueAndTownManager town;
+    PortalManager portals;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+
+    player.pos = { 350.0f, 300.0f };
+    int playerGold = 250;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Update Portals & Scene Transitions
+        portals.Update(dt, player.pos, dungeon, particles);
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            town.Update(player.pos, playerGold);
+            if (!town.inDialogue && !town.inShop) {
+                player.Update(dt, particles);
+            }
+        } else { // SCENE_DUNGEON
+            player.Update(dt, particles);
+
+            // Boss update with difficulty scaling applied
+            if (boss.hp > 0.0f) {
+                boss.Update(dt, player.pos, player.health, particles);
+                if (boss.hp <= 0.0f) {
+                    // Spawn Return Portal on Boss Victory
+                    portals.SpawnDungeonReturnPortal(boss.pos);
+                    loot.SpawnDrop(boss.pos, RARITY_LEGENDARY, true);
+                }
+            }
+            loot.Update(dt, player.pos, particles);
+        }
+
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+
+        // Render Active Scene to Framebuffer
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                } else {
+                    dungeon.Draw();
+                    boss.Draw();
+                    loot.DrawWorldDrops();
+                }
+
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                // Dynamic Lighting Pass
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    lighting.DrawLight(portals.hubDungeonPortal.pos, 220.0f, PURPLE, 0.9f);
+                } else if (portals.dungeonReturnPortal.active) {
+                    lighting.DrawLight(portals.dungeonReturnPortal.pos, 220.0f, CYAN, 0.9f);
+                }
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // Screen-Space HUD & Overlays
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            town.DrawDialogueAndShopUI(screenW, screenH, playerGold);
+            town.DrawQuestTrackerHUD();
+        }
+        portals.DrawFloorHUD(screenW);
+        player.DrawHUD();
+
+        // Screen Fade Effect Overlay
+        portals.DrawTransitionOverlay(screenW, screenH);
+
+        EndDrawing();
+    }
+
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
