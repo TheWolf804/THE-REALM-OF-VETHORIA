@@ -1,0 +1,240 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+#include <cmath>
+
+enum BGMTrack {
+    BGM_TOWN_HUB,
+    BGM_DUNGEON_EXPLORE,
+    BGM_BOSS_BATTLE
+};
+
+class AudioManager {
+public:
+    Music trackTownHub;
+    Music trackDungeon;
+    Music trackBoss;
+
+    BGMTrack currentTrack = BGM_TOWN_HUB;
+    BGMTrack targetTrack = BGM_TOWN_HUB;
+
+    float trackVolumes[3] = { 1.0f, 0.0f, 0.0f };
+    float fadeSpeed = 1.5f; // Cross-fade rate per second
+    float masterVolume = 0.8f;
+
+    bool audioInitialized = false;
+
+    void Init() {
+        InitAudioDevice();
+        if (IsAudioDeviceReady()) {
+            audioInitialized = true;
+            
+            // Load BGM Streams (Assuming valid audio files or procedurally generated streams)
+            trackTownHub = LoadMusicStream("assets/audio/bgm_town.ogg");
+            trackDungeon = LoadMusicStream("assets/audio/bgm_dungeon.ogg");
+            trackBoss    = LoadMusicStream("assets/audio/bgm_boss.ogg");
+
+            // Enable Looping on all music tracks
+            trackTownHub.looping = true;
+            trackDungeon.looping = true;
+            trackBoss.looping    = true;
+
+            PlayMusicStream(trackTownHub);
+            PlayMusicStream(trackDungeon);
+            PlayMusicStream(trackBoss);
+
+            // Set Initial Volumes
+            SetMusicVolume(trackTownHub, masterVolume);
+            SetMusicVolume(trackDungeon, 0.0f);
+            SetMusicVolume(trackBoss, 0.0f);
+        }
+    }
+
+    void SetState(BGMTrack newTrack) {
+        if (targetTrack != newTrack) {
+            targetTrack = newTrack;
+        }
+    }
+
+    void Update(float dt) {
+        if (!audioInitialized) return;
+
+        // Update all active music streams to keep playback buffers filled
+        UpdateMusicStream(trackTownHub);
+        UpdateMusicStream(trackDungeon);
+        UpdateMusicStream(trackBoss);
+
+        // Interpolate Cross-Fading Volumes
+        for (int i = 0; i < 3; i++) {
+            float targetVol = (i == (int)targetTrack) ? masterVolume : 0.0f;
+            if (trackVolumes[i] < targetVol) {
+                trackVolumes[i] += fadeSpeed * dt;
+                if (trackVolumes[i] > targetVol) trackVolumes[i] = targetVol;
+            } else if (trackVolumes[i] > targetVol) {
+                trackVolumes[i] -= fadeSpeed * dt;
+                if (trackVolumes[i] < targetVol) trackVolumes[i] = 0.0f;
+            }
+        }
+
+        // Apply Updated Volumes to Raylib Streams
+        SetMusicVolume(trackTownHub, trackVolumes[0]);
+        SetMusicVolume(trackDungeon, trackVolumes[1]);
+        SetMusicVolume(trackBoss,    trackVolumes[2]);
+
+        if (trackVolumes[(int)targetTrack] >= masterVolume) {
+            currentTrack = targetTrack;
+        }
+    }
+
+    // Play 2D Positional Sound Effects with Distance Attenuation & Stereo Panning
+    void PlaySpatialSound(Sound sound, Vector2 sourcePos, Vector2 listenerPos, float maxDistance = 800.0f) {
+        if (!audioInitialized) return;
+
+        float dist = Vector2Distance(sourcePos, listenerPos);
+        if (dist > maxDistance) return; // Beyond audible range
+
+        // Distance Attenuation (Inverse Linear Falloff)
+        float volume = (1.0f - (dist / maxDistance)) * masterVolume;
+        volume = Clamp(volume, 0.0f, 1.0f);
+
+        // Stereo Panning (-1.0 = Left, 0.0 = Center, 1.0 = Right)
+        float deltaX = sourcePos.x - listenerPos.x;
+        float pan = deltaX / (maxDistance * 0.5f);
+        pan = Clamp(pan, -1.0f, 1.0f);
+
+        SetSoundVolume(sound, volume);
+        SetSoundPan(sound, 0.5f + (pan * 0.5f)); // Raylib pan range [0.0, 1.0]
+        PlaySound(sound);
+    }
+
+    void Unload() {
+        if (audioInitialized) {
+            UnloadMusicStream(trackTownHub);
+            UnloadMusicStream(trackDungeon);
+            UnloadMusicStream(trackBoss);
+            CloseAudioDevice();
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "LootSystem.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Adaptive Dynamic Audio & BGM Cross-fading");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    LootGenerator loot;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+
+    player.pos = { 350.0f, 300.0f };
+    int playerGold = 250;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Scene & Portal State Update
+        portals.Update(dt, player.pos, dungeon, particles);
+
+        // Adaptive BGM Switch Logic
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            audio.SetState(BGM_TOWN_HUB);
+        } else { // SCENE_DUNGEON
+            if (boss.hp > 0.0f && Vector2Distance(player.pos, boss.pos) < 600.0f) {
+                audio.SetState(BGM_BOSS_BATTLE); // Cross-fade to Boss Track when near boss
+            } else {
+                audio.SetState(BGM_DUNGEON_EXPLORE); // Cross-fade to Dungeon Track
+            }
+        }
+
+        audio.Update(dt);
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            town.Update(player.pos, playerGold);
+            if (!town.inDialogue && !town.inShop) {
+                player.Update(dt, particles);
+            }
+        } else {
+            player.Update(dt, particles);
+            if (boss.hp > 0.0f) {
+                boss.Update(dt, player.pos, player.health, particles);
+                if (boss.hp <= 0.0f) {
+                    portals.SpawnDungeonReturnPortal(boss.pos);
+                    loot.SpawnDrop(boss.pos, RARITY_LEGENDARY, true);
+                }
+            }
+            loot.Update(dt, player.pos, particles);
+        }
+
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                } else {
+                    dungeon.Draw();
+                    boss.Draw();
+                    loot.DrawWorldDrops();
+                }
+
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            town.DrawDialogueAndShopUI(screenW, screenH, playerGold);
+            town.DrawQuestTrackerHUD();
+        }
+        portals.DrawFloorHUD(screenW);
+        player.DrawHUD();
+
+        // Audio HUD Indicator
+        DrawRectangle(10, 10, 240, 36, ColorAlpha(BLACK, 0.75f));
+        DrawRectangleLines(10, 10, 240, 36, GOLD);
+        const char* bgmNames[] = { "Town Ambient", "Dungeon Exploration", "Boss Battle" };
+        DrawText(TextFormat("BGM: %s", bgmNames[(int)audio.currentTrack]), 20, 22, 12, GOLD);
+
+        portals.DrawTransitionOverlay(screenW, screenH);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
