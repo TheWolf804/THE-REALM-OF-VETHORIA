@@ -1,0 +1,326 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <cmath>
+
+enum TalentCategory {
+    TALENT_COMBAT,
+    TALENT_VITALITY,
+    TALENT_UTILITY
+};
+
+struct TalentNode {
+    int id;
+    std::string name;
+    std::string description;
+    TalentCategory category;
+    Vector2 gridPos; // Grid coordinate on screen
+    int currentRank = 0;
+    int maxRank = 1;
+    int cost = 1; // Skill points per rank
+    std::vector<int> prereqNodeIds; // Required node IDs to unlock
+    bool isUnlocked = false;
+
+    // Stat bonuses granted per rank
+    float damageBonusPerRank = 0.0f;
+    float healthBonusPerRank = 0.0f;
+    float speedBonusPerRank = 0.0f;
+    float goldBonusPerRank = 0.0f;
+    bool unlocksSpecialAbility = false;
+};
+
+class TalentTreeManager {
+public:
+    std::vector<TalentNode> nodes;
+    int availablePoints = 5; // Skill points pool
+    bool isOpen = false;
+
+    // Player Accumulative Bonuses
+    float bonusDamagePct = 0.0f;
+    float bonusMaxHealth = 0.0f;
+    float bonusMoveSpeed = 0.0f;
+    float bonusGoldGainPct = 0.0f;
+    bool hasDashUnlocked = false;
+
+    void Init() {
+        nodes.clear();
+
+        // --- COMBAT BRANCH ---
+        // Node 0: Sharp Blades
+        nodes.push_back({ 0, "Sharp Blades", "Increases melee damage by +10% per rank.", TALENT_COMBAT, { 300.0f, 220.0f }, 0, 3, 1, {}, false, 0.10f, 0.0f, 0.0f, 0.0f, false });
+        // Node 1: Heavy Strikes (Requires Node 0)
+        nodes.push_back({ 1, "Heavy Strikes", "Increases melee damage by +20% per rank.", TALENT_COMBAT, { 300.0f, 340.0f }, 0, 2, 2, { 0 }, false, 0.20f, 0.0f, 0.0f, 0.0f, false });
+
+        // --- VITALITY BRANCH ---
+        // Node 2: Thick Armor
+        nodes.push_back({ 2, "Thick Armor", "Increases maximum health by +25 HP per rank.", TALENT_VITALITY, { 640.0f, 220.0f }, 0, 3, 1, {}, false, 0.0f, 25.0f, 0.0f, 0.0f, false });
+        // Node 3: Iron Heart (Requires Node 2)
+        nodes.push_back({ 3, "Iron Heart", "Increases maximum health by +50 HP per rank.", TALENT_VITALITY, { 640.0f, 340.0f }, 0, 2, 2, { 2 }, false, 0.0f, 50.0f, 0.0f, 0.0f, false });
+
+        // --- UTILITY BRANCH ---
+        // Node 4: Fleet Footed
+        nodes.push_back({ 4, "Fleet Footed", "Increases movement speed by +8% per rank.", TALENT_UTILITY, { 980.0f, 220.0f }, 0, 3, 1, {}, false, 0.0f, 0.0f, 0.08f, 0.0f, false });
+        // Node 5: Shadow Dash Ability (Requires Node 4)
+        nodes.push_back({ 5, "Shadow Dash", "Unlocks active Dash ability [SPACEBAR].", TALENT_UTILITY, { 980.0f, 340.0f }, 0, 1, 3, { 4 }, false, 0.0f, 0.0f, 0.15f, 0.0f, true });
+    }
+
+    bool IsPrereqMet(const TalentNode& node) const {
+        if (node.prereqNodeIds.empty()) return true;
+        for (int prereqId : node.prereqNodeIds) {
+            for (const auto& n : nodes) {
+                if (n.id == prereqId && n.currentRank < n.maxRank) return false;
+            }
+        }
+        return true;
+    }
+
+    void RecalculateStats() {
+        bonusDamagePct = 0.0f;
+        bonusMaxHealth = 0.0f;
+        bonusMoveSpeed = 0.0f;
+        bonusGoldGainPct = 0.0f;
+        hasDashUnlocked = false;
+
+        for (const auto& n : nodes) {
+            if (n.currentRank > 0) {
+                bonusDamagePct += n.damageBonusPerRank * n.currentRank;
+                bonusMaxHealth += n.healthBonusPerRank * n.currentRank;
+                bonusMoveSpeed += n.speedBonusPerRank * n.currentRank;
+                bonusGoldGainPct += n.goldBonusPerRank * n.currentRank;
+                if (n.unlocksSpecialAbility) hasDashUnlocked = true;
+            }
+        }
+    }
+
+    void Update(Vector2 mousePos) {
+        if (IsKeyPressed(KEY_T)) {
+            isOpen = !isOpen;
+        }
+
+        if (!isOpen) return;
+
+        // Node Click Check
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            for (auto& node : nodes) {
+                if (CheckCollisionPointCircle(mousePos, node.gridPos, 28.0f)) {
+                    if (IsPrereqMet(node) && availablePoints >= node.cost && node.currentRank < node.maxRank) {
+                        availablePoints -= node.cost;
+                        node.currentRank++;
+                        node.isUnlocked = true;
+                        RecalculateStats();
+                    }
+                }
+            }
+        }
+    }
+
+    void Draw(int screenW, int screenH, Vector2 mousePos) {
+        if (!isOpen) return;
+
+        // Overlay Dimming Background
+        DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.85f));
+
+        // Window Panel
+        int winW = 1000, winH = 560;
+        int winX = (screenW - winW) / 2;
+        int winY = (screenH - winH) / 2;
+
+        DrawRectangle(winX, winY, winW, winH, GetColor(0x12121AFF));
+        DrawRectangleLinesEx({ (float)winX, (float)winY, (float)winW, (float)winH }, 2, GOLD);
+
+        // Header Title
+        DrawText("TALENT & SKILL TREE", winX + 30, winY + 25, 20, GOLD);
+        DrawText(TextFormat("Available Skill Points: %i", availablePoints), winX + winW - 250, winY + 25, 16, YELLOW);
+
+        // Category Titles
+        DrawText("COMBAT", winX + 160, winY + 80, 16, RED);
+        DrawText("VITALITY", winX + 490, winY + 80, 16, GREEN);
+        DrawText("UTILITY", winX + 830, winY + 80, 16, SKYBLUE);
+
+        // Render Connection Lines First (Behind Nodes)
+        for (const auto& node : nodes) {
+            for (int prereqId : node.prereqNodeIds) {
+                for (const auto& pNode : nodes) {
+                    if (pNode.id == prereqId) {
+                        Color lineColor = (node.isUnlocked) ? GOLD : ColorAlpha(GRAY, 0.4f);
+                        DrawLineEx(pNode.gridPos, node.gridPos, 4.0f, lineColor);
+                    }
+                }
+            }
+        }
+
+        // Render Talent Nodes
+        const TalentNode* hoveredNode = nullptr;
+
+        for (const auto& node : nodes) {
+            bool prereqMet = IsPrereqMet(node);
+            bool isHovered = CheckCollisionPointCircle(mousePos, node.gridPos, 28.0f);
+            if (isHovered) hoveredNode = &node;
+
+            Color circleColor = DARKGRAY;
+            if (node.currentRank == node.maxRank) circleColor = GOLD;
+            else if (node.currentRank > 0) circleColor = ORANGE;
+            else if (prereqMet && availablePoints >= node.cost) circleColor = PURPLE;
+
+            // Draw Node Outer Ring & Fill
+            DrawCircleV(node.gridPos, 28.0f, circleColor);
+            DrawCircleV(node.gridPos, 24.0f, GetColor(0x1A1A26FF));
+            DrawCircleLines((int)node.gridPos.x, (int)node.gridPos.y, 28.0f, isHovered ? WHITE : circleColor);
+
+            // Node Rank Label
+            DrawText(TextFormat("%i/%i", node.currentRank, node.maxRank), (int)node.gridPos.x - 12, (int)node.gridPos.y - 6, 12, RAYWHITE);
+            DrawText(node.name.c_str(), (int)node.gridPos.x - MeasureText(node.name.c_str(), 11) / 2, (int)node.gridPos.y + 34, 11, RAYWHITE);
+        }
+
+        // Tooltip Overlay for Hovered Node
+        if (hoveredNode != nullptr) {
+            int ttW = 280, ttH = 120;
+            int ttX = (int)mousePos.x + 15;
+            int ttY = (int)mousePos.y + 15;
+
+            if (ttX + ttW > winX + winW) ttX = (int)mousePos.x - ttW - 15;
+            if (ttY + ttH > winY + winH) ttY = (int)mousePos.y - ttH - 15;
+
+            DrawRectangle(ttX, ttY, ttW, ttH, ColorAlpha(BLACK, 0.95f));
+            DrawRectangleLines(ttX, ttY, ttW, ttH, GOLD);
+
+            DrawText(hoveredNode->name.c_str(), ttX + 12, ttY + 10, 14, GOLD);
+            DrawText(TextFormat("Rank: %i / %i   Cost: %i SP", hoveredNode->currentRank, hoveredNode->maxRank, hoveredNode->cost), ttX + 12, ttY + 30, 11, GRAY);
+            DrawText(hoveredNode->description.c_str(), ttX + 12, ttY + 50, 10, RAYWHITE);
+
+            if (!IsPrereqMet(*hoveredNode)) {
+                DrawText("Requires previous node unlocks!", ttX + 12, ttY + 95, 10, RED);
+            } else if (availablePoints < hoveredNode->cost && hoveredNode->currentRank < hoveredNode->maxRank) {
+                DrawText("Not enough Skill Points!", ttX + 12, ttY + 95, 10, ORANGE);
+            }
+        }
+
+        DrawText("[T] Close Talent Tree", winX + 30, winY + winH - 35, 12, GRAY);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "LootSystem.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Talent Tree & Skill Upgrades");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    LootGenerator loot;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+
+    player.pos = { 350.0f, 300.0f };
+    int playerGold = 250;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        // Talent Tree Toggle & Stat Synchronization
+        talentTree.Update(mousePos);
+        player.maxHealth = 100.0f + talentTree.bonusMaxHealth;
+
+        // Update Scene Logic (Pause character movement when Talent UI is active)
+        if (!talentTree.isOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (portals.currentScene == SCENE_TOWN_HUB) {
+                town.Update(player.pos, playerGold);
+                if (!town.inDialogue && !town.inShop) {
+                    player.Update(dt, particles);
+                }
+            } else {
+                player.Update(dt, particles);
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                    if (boss.hp <= 0.0f) {
+                        portals.SpawnDungeonReturnPortal(boss.pos);
+                        loot.SpawnDrop(boss.pos, RARITY_LEGENDARY, true);
+                        talentTree.availablePoints += 2; // Reward 2 Skill Points on Boss Defeat!
+                    }
+                }
+                loot.Update(dt, player.pos, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                } else {
+                    dungeon.Draw();
+                    boss.Draw();
+                    loot.DrawWorldDrops();
+                }
+
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // UI & Overlays
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            town.DrawDialogueAndShopUI(screenW, screenH, playerGold);
+            town.DrawQuestTrackerHUD();
+        }
+        portals.DrawFloorHUD(screenW);
+        player.DrawHUD();
+
+        // Talent Tree Prompt HUD
+        DrawRectangle(10, 50, 240, 30, ColorAlpha(BLACK, 0.75f));
+        DrawRectangleLines(10, 50, 240, 30, PURPLE);
+        DrawText(TextFormat("[T] Talent Tree (%i SP)", talentTree.availablePoints), 20, 58, 12, YELLOW);
+
+        // Talent Tree Fullscreen Screen
+        talentTree.Draw(screenW, screenH, mousePos);
+
+        portals.DrawTransitionOverlay(screenW, screenH);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
