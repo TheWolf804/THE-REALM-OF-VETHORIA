@@ -1,0 +1,275 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "DungeonGenerator.h"
+#include <vector>
+#include <cmath>
+
+enum FogState {
+    FOG_UNEXPLORED = 0,
+    FOG_EXPLORED,
+    FOG_VISIBLE
+};
+
+class MinimapFogManager {
+public:
+    int gridW = 0;
+    int gridH = 0;
+    float tileSize = 0.0f;
+    std::vector<FogState> fogGrid;
+
+    // Minimap Display Configs
+    int minimapSize = 160;   // Width & height in pixels
+    int minimapMargin = 20;  // Offset from screen edge
+    float sightRadius = 220.0f; // Fog reveal radius around player (world units)
+
+    void Init(int dungeonCols, int dungeonRows, float worldTileSize) {
+        gridW = dungeonCols;
+        gridH = dungeonRows;
+        tileSize = worldTileSize;
+        fogGrid.assign(gridW * gridH, FOG_UNEXPLORED);
+    }
+
+    void Update(Vector2 playerPos) {
+        if (gridW <= 0 || gridH <= 0 || tileSize <= 0.0f) return;
+
+        // Reset previous frame's FOG_VISIBLE to FOG_EXPLORED
+        for (auto& cell : fogGrid) {
+            if (cell == FOG_VISIBLE) {
+                cell = FOG_EXPLORED;
+            }
+        }
+
+        // Calculate player grid center
+        int playerGridX = (int)(playerPos.x / tileSize);
+        int playerGridY = (int)(playerPos.y / tileSize);
+        int radiusInTiles = (int)(sightRadius / tileSize) + 1;
+
+        // Sweep radial zone around player position
+        for (int dy = -radiusInTiles; dy <= radiusInTiles; dy++) {
+            for (int dx = -radiusInTiles; dx <= radiusInTiles; dx++) {
+                int gx = playerGridX + dx;
+                int gy = playerGridY + dy;
+
+                if (gx >= 0 && gx < gridW && gy >= 0 && gy < gridH) {
+                    Vector2 cellWorldPos = { (gx + 0.5f) * tileSize, (gy + 0.5f) * tileSize };
+                    if (Vector2Distance(playerPos, cellWorldPos) <= sightRadius) {
+                        fogGrid[gy * gridW + gx] = FOG_VISIBLE;
+                    }
+                }
+            }
+        }
+    }
+
+    void DrawMinimapHUD(int screenW, const DungeonGenerator& dungeon, Vector2 playerPos, Vector2 bossPos, bool bossAlive, Vector2 portalPos, bool portalActive) {
+        if (gridW <= 0 || gridH <= 0) return;
+
+        int mapX = screenW - minimapSize - minimapMargin;
+        int mapY = minimapMargin;
+
+        // 1. Radar Frame Background & Border
+        DrawRectangle(mapX - 4, mapY - 4, minimapSize + 8, minimapSize + 8, ColorAlpha(GetColor(0x0E0E14FF), 0.9f));
+        DrawRectangleLines(mapX - 4, mapY - 4, minimapSize + 8, minimapSize + 8, GOLD);
+
+        // Minimap Title
+        DrawText("DUNGEON MAP", mapX, mapY - 18, 10, GOLD);
+
+        // Calculate Scale Ratios to fit dungeon grid perfectly inside minimap size
+        float scaleX = (float)minimapSize / (float)(gridW * tileSize);
+        float scaleY = (float)minimapSize / (float)(gridH * tileSize);
+
+        // 2. Render Revealed Tile Grid
+        for (int y = 0; y < gridH; y++) {
+            for (int x = 0; x < gridW; x++) {
+                FogState fog = fogGrid[y * gridW + x];
+                if (fog == FOG_UNEXPLORED) continue; // Unrevealed shroud remains dark
+
+                float px = mapX + (x * tileSize) * scaleX;
+                float py = mapY + (y * tileSize) * scaleY;
+                float pw = tileSize * scaleX + 0.5f;
+                float ph = tileSize * scaleY + 0.5f;
+
+                // Tile Type Color Encoding
+                int tileType = dungeon.grid[y][x]; // 0 = Wall, 1 = Floor
+                Color tileColor = (tileType == 1) ? GetColor(0x3A3A4EFF) : GetColor(0x181822FF);
+
+                // Dim previously explored tiles not in current sight
+                if (fog == FOG_EXPLORED) {
+                    tileColor = ColorAlpha(tileColor, 0.45f);
+                }
+
+                DrawRectangle((int)px, (int)py, (int)pw, (int)ph, tileColor);
+            }
+        }
+
+        // 3. Render Special Entities (If within explored cells)
+        // Active Exit Portal Marker
+        if (portalActive) {
+            int portalGX = (int)(portalPos.x / tileSize);
+            int portalGY = (int)(portalPos.y / tileSize);
+            if (portalGX >= 0 && portalGX < gridW && portalGY >= 0 && portalGY < gridH) {
+                if (fogGrid[portalGY * gridW + portalGX] != FOG_UNEXPLORED) {
+                    float px = mapX + portalPos.x * scaleX;
+                    float py = mapY + portalPos.y * scaleY;
+                    DrawCircle((int)px, (int)py, 3.5f, PURPLE);
+                }
+            }
+        }
+
+        // Boss Icon Marker (Red Skull Indicator)
+        if (bossAlive) {
+            int bossGX = (int)(bossPos.x / tileSize);
+            int bossGY = (int)(bossPos.y / tileSize);
+            if (bossGX >= 0 && bossGX < gridW && bossGY >= 0 && bossGY < gridH) {
+                if (fogGrid[bossGY * gridW + bossGX] != FOG_UNEXPLORED) {
+                    float px = mapX + bossPos.x * scaleX;
+                    float py = mapY + bossPos.y * scaleY;
+                    DrawCircle((int)px, (int)py, 4.0f, RED);
+                    DrawCircleLines((int)px, (int)py, 5.0f, WHITE);
+                }
+            }
+        }
+
+        // 4. Render Player Icon (Blinking Arrow/Dot Indicator)
+        float playerPX = mapX + playerPos.x * scaleX;
+        float playerPY = mapY + playerPos.y * scaleY;
+
+        DrawCircle((int)playerPX, (int)playerPY, 3.0f, YELLOW);
+        DrawCircleLines((int)playerPX, (int)playerPY, 5.0f, ColorAlpha(YELLOW, 0.6f));
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "LootSystem.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Real-Time Minimap & Fog of War");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    LootGenerator loot;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+
+    // Generate Initial Dungeon & Setup Fog Grid Dimensions
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+    player.pos = { 350.0f, 300.0f }; // Start in Town Hub
+    int playerGold = 250;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        talentTree.Update(mousePos);
+
+        if (!talentTree.isOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            
+            // Reset Fog Grid if entering a new procedural dungeon floor
+            if (portals.isTransitioning && portals.targetScene == SCENE_DUNGEON && portals.transitionAlpha >= 0.95f) {
+                minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+            }
+
+            audio.Update(dt);
+
+            if (portals.currentScene == SCENE_TOWN_HUB) {
+                town.Update(player.pos, playerGold);
+                if (!town.inDialogue && !town.inShop) {
+                    player.Update(dt, particles);
+                }
+            } else { // SCENE_DUNGEON
+                player.Update(dt, particles);
+
+                // Update Dynamic Fog of War Discovery
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                    if (boss.hp <= 0.0f) {
+                        portals.SpawnDungeonReturnPortal(boss.pos);
+                        loot.SpawnDrop(boss.pos, RARITY_LEGENDARY, true);
+                        talentTree.availablePoints += 2;
+                    }
+                }
+                loot.Update(dt, player.pos, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Scene to Post-FX Framebuffer
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                } else {
+                    dungeon.Draw();
+                    boss.Draw();
+                    loot.DrawWorldDrops();
+                }
+
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // Render Screen-Space Overlays & Minimap Widget
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            town.DrawDialogueAndShopUI(screenW, screenH, playerGold);
+            town.DrawQuestTrackerHUD();
+        } else {
+            // Render Minimap Widget when inside Dungeon
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        portals.DrawFloorHUD(screenW);
+        player.DrawHUD();
+
+        // Talent Tree Screen
+        talentTree.Draw(screenW, screenH, mousePos);
+        portals.DrawTransitionOverlay(screenW, screenH);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
