@@ -1,0 +1,322 @@
+#pragma once
+#include <fstream>
+#include <iostream>
+#include <vector>
+#include <string>
+#include "raylib.h"
+#include "Player.h"
+#include "TalentTreeSystem.h"
+#include "DialogueAndTownSystem.h"
+
+// Note: Ensure nlohmann/json.hpp is included in your project dependencies
+#include "nlohmann/json.hpp"
+
+using json = nlohmann::json;
+
+struct SaveItemData {
+    std::string name;
+    int rarity;
+    int itemType;
+    int statValue;
+};
+
+struct GameSaveData {
+    // Player Stats
+    int level = 1;
+    float currentHealth = 100.0f;
+    float maxHealth = 100.0f;
+    int gold = 250;
+    int availableSkillPoints = 0;
+
+    // Talent Tree Unlocks (Node ID -> Current Rank)
+    std::vector<std::pair<int, int>> talentRanks;
+
+    // Quests
+    int currentQuestStage = 0;
+    bool bossQuestCompleted = false;
+
+    // Inventory
+    std::vector<SaveItemData> inventory;
+};
+
+class SaveLoadManager {
+public:
+    std::string saveFilePath = "savegame.json";
+
+    bool SaveGame(const Player& player, int playerGold, const TalentTreeManager& talentTree, const DialogueAndTownManager& town) {
+        json j;
+
+        // 1. Serialize Player Stats
+        j["player"]["level"] = 1; // Expand level if tracked
+        j["player"]["currentHealth"] = player.health;
+        j["player"]["maxHealth"] = player.maxHealth;
+        j["player"]["gold"] = playerGold;
+        j["player"]["skillPoints"] = talentTree.availablePoints;
+
+        // 2. Serialize Talent Tree
+        json talentsJson = json::array();
+        for (const auto& node : talentTree.nodes) {
+            talentsJson.push_back({
+                {"id", node.id},
+                {"rank", node.currentRank}
+            });
+        }
+        j["talents"] = talentsJson;
+
+        // 3. Serialize Quest Data
+        j["quests"]["stage"] = town.currentQuestStage;
+        j["quests"]["bossDefeated"] = town.questCompleted;
+
+        // 4. Serialize Inventory
+        json invJson = json::array();
+        for (const auto& item : player.inventory) {
+            invJson.push_back({
+                {"name", item.name},
+                {"rarity", (int)item.rarity},
+                {"statValue", item.statValue}
+            });
+        }
+        j["inventory"] = invJson;
+
+        // Write JSON to disk
+        std::ofstream file(saveFilePath);
+        if (file.is_open()) {
+            file << j.dump(4); // 4 spaces indentation
+            file.close();
+            TraceLog(LOG_INFO, "SAVE SYSTEM: Game successfully saved to %s", saveFilePath.c_str());
+            return true;
+        }
+
+        TraceLog(LOG_ERROR, "SAVE SYSTEM: Failed to write save file!");
+        return false;
+    }
+
+    bool LoadGame(Player& player, int& playerGold, TalentTreeManager& talentTree, DialogueAndTownManager& town) {
+        std::ifstream file(saveFilePath);
+        if (!file.is_open()) {
+            TraceLog(LOG_WARNING, "SAVE SYSTEM: Save file %s not found.", saveFilePath.c_str());
+            return false;
+        }
+
+        json j;
+        try {
+            file >> j;
+            file.close();
+
+            // 1. Restore Player Stats & Gold
+            player.health = j["player"].value("currentHealth", 100.0f);
+            player.maxHealth = j["player"].value("maxHealth", 100.0f);
+            playerGold = j["player"].value("gold", 250);
+            talentTree.availablePoints = j["player"].value("skillPoints", 0);
+
+            // 2. Restore Talent Node Ranks
+            if (j.contains("talents")) {
+                for (const auto& t : j["talents"]) {
+                    int nodeId = t.value("id", -1);
+                    int nodeRank = t.value("rank", 0);
+
+                    for (auto& node : talentTree.nodes) {
+                        if (node.id == nodeId) {
+                            node.currentRank = nodeRank;
+                            node.isUnlocked = (nodeRank > 0);
+                        }
+                    }
+                }
+                talentTree.RecalculateStats(); // Reapply stat bonuses to player
+            }
+
+            // 3. Restore Quests
+            if (j.contains("quests")) {
+                town.currentQuestStage = j["quests"].value("stage", 0);
+                town.questCompleted = j["quests"].value("bossDefeated", false);
+            }
+
+            // 4. Restore Inventory Items
+            if (j.contains("inventory")) {
+                player.inventory.clear();
+                for (const auto& item : j["inventory"]) {
+                    Item newItem;
+                    newItem.name = item.value("name", "Unknown Item");
+                    newItem.rarity = (ItemRarity)item.value("rarity", 0);
+                    newItem.statValue = item.value("statValue", 0);
+                    player.inventory.push_back(newItem);
+                }
+            }
+
+            TraceLog(LOG_INFO, "SAVE SYSTEM: Game successfully loaded from %s", saveFilePath.c_str());
+            return true;
+        }
+        catch (const std::exception& e) {
+            TraceLog(LOG_ERROR, "SAVE SYSTEM: Parse error while loading JSON: %s", e.what());
+            file.close();
+            return false;
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "LootSystem.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "SaveSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Save & Load System");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    LootGenerator loot;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    SaveLoadManager saveSystem;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+    player.pos = { 350.0f, 300.0f };
+    int playerGold = 250;
+
+    // HUD Banner Feedback timers
+    float saveBannerTimer = 0.0f;
+    float loadBannerTimer = 0.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        if (saveBannerTimer > 0.0f) saveBannerTimer -= dt;
+        if (loadBannerTimer > 0.0f) loadBannerTimer -= dt;
+
+        // Quick Save (F5) and Quick Load (F9) Triggers
+        if (IsKeyPressed(KEY_F5)) {
+            if (saveSystem.SaveGame(player, playerGold, talentTree, town)) {
+                saveBannerTimer = 2.0f;
+            }
+        }
+        if (IsKeyPressed(KEY_F9)) {
+            if (saveSystem.LoadGame(player, playerGold, talentTree, town)) {
+                loadBannerTimer = 2.0f;
+            }
+        }
+
+        talentTree.Update(mousePos);
+
+        if (!talentTree.isOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            
+            if (portals.isTransitioning && portals.targetScene == SCENE_DUNGEON && portals.transitionAlpha >= 0.95f) {
+                minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+            }
+
+            audio.Update(dt);
+
+            if (portals.currentScene == SCENE_TOWN_HUB) {
+                town.Update(player.pos, playerGold);
+                if (!town.inDialogue && !town.inShop) {
+                    player.Update(dt, particles);
+                }
+            } else {
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                    if (boss.hp <= 0.0f) {
+                        portals.SpawnDungeonReturnPortal(boss.pos);
+                        loot.SpawnDrop(boss.pos, RARITY_LEGENDARY, true);
+                        talentTree.availablePoints += 2;
+                    }
+                }
+                loot.Update(dt, player.pos, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                } else {
+                    dungeon.Draw();
+                    boss.Draw();
+                    loot.DrawWorldDrops();
+                }
+
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // UI & Overlays
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            town.DrawDialogueAndShopUI(screenW, screenH, playerGold);
+            town.DrawQuestTrackerHUD();
+        } else {
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        portals.DrawFloorHUD(screenW);
+        player.DrawHUD();
+
+        // Save / Load Controls Prompt
+        DrawRectangle(10, 90, 240, 25, ColorAlpha(BLACK, 0.75f));
+        DrawRectangleLines(10, 90, 240, 25, GRAY);
+        DrawText("[F5] Save Game   [F9] Load Game", 20, 97, 11, RAYWHITE);
+
+        // Save / Load Notification Banner Overlay
+        if (saveBannerTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 120, 20, 240, 30, ColorAlpha(DARKGREEN, 0.9f));
+            DrawRectangleLines(screenW / 2 - 120, 20, 240, 30, GREEN);
+            DrawText("GAME SAVED", screenW / 2 - 45, 27, 12, WHITE);
+        }
+        if (loadBannerTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 120, 20, 240, 30, ColorAlpha(DARKBLUE, 0.9f));
+            DrawRectangleLines(screenW / 2 - 120, 20, 240, 30, SKYBLUE);
+            DrawText("GAME LOADED", screenW / 2 - 50, 27, 12, WHITE);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        portals.DrawTransitionOverlay(screenW, screenH);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
