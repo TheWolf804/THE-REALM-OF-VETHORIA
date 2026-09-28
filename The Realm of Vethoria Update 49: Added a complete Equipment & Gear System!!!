@@ -1,0 +1,460 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+#include <vector>
+#include <cmath>
+
+enum EquipmentType {
+    EQUIP_WEAPON = 0,
+    EQUIP_ARMOR,
+    EQUIP_RELIC,
+    EQUIP_COUNT
+};
+
+enum GearRarity {
+    RARITY_COMMON = 0,
+    RARITY_RARE,
+    RARITY_EPIC,
+    RARITY_LEGENDARY
+};
+
+struct GearItem {
+    int id;
+    std::string name;
+    EquipmentType type;
+    GearRarity rarity;
+    
+    // Stats
+    float bonusAttack = 0.0f;
+    float bonusDefense = 0.0f;
+    float bonusHealth = 0.0f;
+    float bonusSpeed = 0.0f;
+    int goldValue = 10;
+};
+
+struct WorldLootBeam {
+    GearItem item;
+    Vector2 pos;
+    float beamAnimTimer = 0.0f;
+    bool active = true;
+};
+
+class EquipmentManager {
+public:
+    // Equipped Gear Slots [0 = Weapon, 1 = Armor, 2 = Relic]
+    GearItem equippedSlots[EQUIP_COUNT];
+    bool slotOccupied[EQUIP_COUNT] = { false, false, false };
+
+    // Inventory & Ground World Drops
+    std::vector<GearItem> inventory;
+    std::vector<WorldLootBeam> worldDrops;
+
+    bool isInventoryOpen = false;
+
+    // Aggregated Player Equipment Bonuses
+    float totalBonusATK = 0.0f;
+    float totalBonusDEF = 0.0f;
+    float totalBonusHP = 0.0f;
+    float totalBonusSpeed = 0.0f;
+
+    Color GetRarityColor(GearRarity rarity) const {
+        switch (rarity) {
+            case RARITY_COMMON: return WHITE;
+            case RARITY_RARE:   return SKYBLUE;
+            case RARITY_EPIC:   return PURPLE;
+            case RARITY_LEGENDARY: return GOLD;
+            default: return WHITE;
+        }
+    }
+
+    // Procedural Gear Generator with Prefixes and Suffixes
+    GearItem GenerateRandomGear(EquipmentType type, GearRarity rarity) {
+        GearItem item;
+        item.id = GetRandomValue(1000, 9999);
+        item.type = type;
+        item.rarity = rarity;
+
+        std::vector<std::string> prefixes = { "Furious", "Vanguard's", "Volcanic", "Radiant", "Ancient" };
+        std::vector<std::string> weapons  = { "Longsword", "Battleaxe", "Warhammer", "Dagger" };
+        std::vector<std::string> armors   = { "Cuirass", "Chainmail", "Plate Mail", "Robe" };
+        std::vector<std::string> relics   = { "Amulet", "Ring", "Talisman", "Orb" };
+        std::vector<std::string> suffixes = { "of Strength", "of the Bear", "of Swiftness", "of Vitality" };
+
+        std::string prefix = prefixes[GetRandomValue(0, (int)prefixes.size() - 1)];
+        std::string suffix = suffixes[GetRandomValue(0, (int)suffixes.size() - 1)];
+        std::string baseName = "";
+
+        if (type == EQUIP_WEAPON) baseName = weapons[GetRandomValue(0, (int)weapons.size() - 1)];
+        else if (type == EQUIP_ARMOR) baseName = armors[GetRandomValue(0, (int)armors.size() - 1)];
+        else baseName = relics[GetRandomValue(0, (int)relics.size() - 1)];
+
+        item.name = prefix + " " + baseName + " " + suffix;
+
+        // Rarity Multipliers
+        float rarityMult = 1.0f + (int)rarity * 0.75f;
+
+        if (type == EQUIP_WEAPON) {
+            item.bonusAttack = (float)GetRandomValue(10, 25) * rarityMult;
+            item.bonusSpeed = (float)GetRandomValue(0, 5) * rarityMult;
+        } else if (type == EQUIP_ARMOR) {
+            item.bonusDefense = (float)GetRandomValue(5, 15) * rarityMult;
+            item.bonusHealth = (float)GetRandomValue(20, 50) * rarityMult;
+        } else { // RELIC
+            item.bonusAttack = (float)GetRandomValue(5, 12) * rarityMult;
+            item.bonusHealth = (float)GetRandomValue(15, 30) * rarityMult;
+            item.bonusSpeed = (float)GetRandomValue(5, 12) * rarityMult;
+        }
+
+        item.goldValue = (int)(25 * rarityMult);
+        return item;
+    }
+
+    void SpawnWorldDrop(Vector2 pos, EquipmentType type, GearRarity rarity) {
+        WorldLootBeam drop;
+        drop.item = GenerateRandomGear(type, rarity);
+        drop.pos = pos;
+        drop.beamAnimTimer = (float)GetRandomValue(0, 100) * 0.1f;
+        drop.active = true;
+        worldDrops.push_back(drop);
+    }
+
+    void RecalculateStats() {
+        totalBonusATK = 0.0f;
+        totalBonusDEF = 0.0f;
+        totalBonusHP = 0.0f;
+        totalBonusSpeed = 0.0f;
+
+        for (int i = 0; i < EQUIP_COUNT; i++) {
+            if (slotOccupied[i]) {
+                totalBonusATK += equippedSlots[i].bonusAttack;
+                totalBonusDEF += equippedSlots[i].bonusDefense;
+                totalBonusHP += equippedSlots[i].bonusHealth;
+                totalBonusSpeed += equippedSlots[i].bonusSpeed;
+            }
+        }
+    }
+
+    void EquipItemFromInventory(size_t invIndex) {
+        if (invIndex >= inventory.size()) return;
+
+        GearItem item = inventory[invIndex];
+        int slotIndex = (int)item.type;
+
+        // If slot already occupied, swap item back to inventory
+        if (slotOccupied[slotIndex]) {
+            GearItem unequipped = equippedSlots[slotIndex];
+            inventory[invIndex] = unequipped;
+        } else {
+            inventory.erase(inventory.begin() + invIndex);
+        }
+
+        equippedSlots[slotIndex] = item;
+        slotOccupied[slotIndex] = true;
+        RecalculateStats();
+    }
+
+    void UnequipItem(int slotIndex) {
+        if (slotIndex < 0 || slotIndex >= EQUIP_COUNT || !slotOccupied[slotIndex]) return;
+
+        inventory.push_back(equippedSlots[slotIndex]);
+        slotOccupied[slotIndex] = false;
+        RecalculateStats();
+    }
+
+    void Update(float dt, Vector2 playerPos) {
+        if (IsKeyPressed(KEY_I)) {
+            isInventoryOpen = !isInventoryOpen;
+        }
+
+        // Animate World Loot Beams and handle interaction pickup
+        for (auto& drop : worldDrops) {
+            if (!drop.active) continue;
+            drop.beamAnimTimer += dt * 3.0f;
+
+            if (CheckCollisionCircles(playerPos, 20.0f, drop.pos, 24.0f)) {
+                if (IsKeyPressed(KEY_E)) {
+                    inventory.push_back(drop.item);
+                    drop.active = false;
+                }
+            }
+        }
+    }
+
+    void DrawWorldLootBeams() {
+        for (const auto& drop : worldDrops) {
+            if (!drop.active) continue;
+
+            Color rColor = GetRarityColor(drop.item.rarity);
+            float pulse = (sinf(drop.beamAnimTimer) * 0.5f + 0.5f);
+
+            // 1. Ground Glow Ellipse
+            DrawEllipse((int)drop.pos.x, (int)drop.pos.y + 6, 18.0f + pulse * 4.0f, 8.0f + pulse * 2.0f, ColorAlpha(rColor, 0.4f));
+
+            // 2. Vertical Loot Beam
+            DrawRectangleGradientV((int)drop.pos.x - 4, (int)drop.pos.y - 120, 8, 120, ColorAlpha(rColor, 0.0f), ColorAlpha(rColor, 0.7f));
+            DrawRectangleGradientV((int)drop.pos.x - 1, (int)drop.pos.y - 120, 2, 120, ColorAlpha(WHITE, 0.0f), ColorAlpha(WHITE, 0.9f));
+
+            // 3. Floating Orb Indicator
+            DrawCircleV({ drop.pos.x, drop.pos.y - 6.0f + pulse * 4.0f }, 5.0f, rColor);
+            DrawCircleV({ drop.pos.x, drop.pos.y - 6.0f + pulse * 4.0f }, 2.0f, WHITE);
+
+            // Pickup Prompt
+            DrawRectangle((int)drop.pos.x - 45, (int)drop.pos.y - 140, 90, 18, ColorAlpha(BLACK, 0.85f));
+            DrawText("[E] Pick Up", (int)drop.pos.x - MeasureText("[E] Pick Up", 10) / 2, (int)drop.pos.y - 136, 10, rColor);
+        }
+    }
+
+    void DrawEquipmentUI(int screenW, int screenH, Vector2 mousePos) {
+        if (!isInventoryOpen) return;
+
+        // Overlay Dimming Background
+        DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.8f));
+
+        int panelW = 860, panelH = 500;
+        int panelX = (screenW - panelW) / 2;
+        int panelY = (screenH - panelH) / 2;
+
+        DrawRectangle(panelX, panelY, panelW, panelH, GetColor(0x12121AFF));
+        DrawRectangleLinesEx({ (float)panelX, (float)panelY, (float)panelW, (float)panelH }, 2, GOLD);
+
+        DrawText("CHARACTER EQUIPMENT & INVENTORY", panelX + 25, panelY + 20, 18, GOLD);
+
+        // --- LEFT COLUMN: EQUIPMENT SLOTS ---
+        const char* slotNames[EQUIP_COUNT] = { "WEAPON", "ARMOR", "RELIC" };
+        int hoveredEquipSlot = -1;
+
+        for (int i = 0; i < EQUIP_COUNT; i++) {
+            int slotX = panelX + 30;
+            int slotY = panelY + 70 + i * 85;
+            Rectangle slotRect = { (float)slotX, (float)slotY, 240.0f, 70.0f };
+
+            bool isHovered = CheckCollisionPointRec(mousePos, slotRect);
+            if (isHovered) hoveredEquipSlot = i;
+
+            DrawRectangleRec(slotRect, GetColor(0x1A1A26FF));
+            DrawRectangleLinesEx(slotRect, 1, isHovered ? WHITE : GRAY);
+
+            DrawText(slotNames[i], slotX + 10, slotY + 8, 10, GRAY);
+
+            if (slotOccupied[i]) {
+                Color rColor = GetRarityColor(equippedSlots[i].rarity);
+                DrawText(equippedSlots[i].name.c_str(), slotX + 10, slotY + 26, 11, rColor);
+
+                std::string statsStr = TextFormat("ATK:+%.0f DEF:+%.0f HP:+%.0f", equippedSlots[i].bonusAttack, equippedSlots[i].bonusDefense, equippedSlots[i].bonusHealth);
+                DrawText(statsStr.c_str(), slotX + 10, slotY + 46, 10, LIGHTGRAY);
+
+                if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    UnequipItem(i);
+                }
+            } else {
+                DrawText("Empty Slot", slotX + 10, slotY + 30, 12, DARKGRAY);
+            }
+        }
+
+        // --- MIDDLE COLUMN: TOTAL STAT SUMMARY ---
+        int summaryX = panelX + 300;
+        int summaryY = panelY + 70;
+        DrawRectangle(summaryX, summaryY, 200, 240, GetColor(0x181822FF));
+        DrawRectangleLines(summaryX, summaryY, 200, 240, PURPLE);
+
+        DrawText("EQUIPMENT BONUSES", summaryX + 15, summaryY + 15, 12, PURPLE);
+        DrawText(TextFormat("Bonus ATK:   +%.0f", totalBonusATK), summaryX + 15, summaryY + 50, 12, RED);
+        DrawText(TextFormat("Bonus DEF:   +%.0f", totalBonusDEF), summaryX + 15, summaryY + 80, 12, BLUE);
+        DrawText(TextFormat("Bonus HP:    +%.0f", totalBonusHP), summaryX + 15, summaryY + 110, 12, GREEN);
+        DrawText(TextFormat("Bonus Speed: +%.0f", totalBonusSpeed), summaryX + 15, summaryY + 140, 12, SKYBLUE);
+
+        // --- RIGHT COLUMN: INVENTORY GRID ---
+        int invX = panelX + 530;
+        int invY = panelY + 70;
+        DrawText("INVENTORY ITEMS", invX, invY - 20, 12, GOLD);
+
+        int hoveredInvIndex = -1;
+
+        for (size_t i = 0; i < 15; i++) {
+            int row = (int)i / 3;
+            int col = (int)i % 3;
+            Rectangle itemRect = { (float)(invX + col * 100), (float)(invY + row * 75), 90.0f, 65.0f };
+
+            bool isHovered = CheckCollisionPointRec(mousePos, itemRect);
+            DrawRectangleRec(itemRect, GetColor(0x1A1A26FF));
+            DrawRectangleLinesEx(itemRect, 1, isHovered ? YELLOW : DARKGRAY);
+
+            if (i < inventory.size()) {
+                if (isHovered) hoveredInvIndex = (int)i;
+
+                Color rColor = GetRarityColor(inventory[i].rarity);
+                DrawText(inventory[i].name.c_str(), (int)itemRect.x + 5, (int)itemRect.y + 8, 9, rColor);
+                DrawText(TextFormat("%iG", inventory[i].goldValue), (int)itemRect.x + 5, (int)itemRect.y + 45, 9, GOLD);
+
+                if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    EquipItemFromInventory(i);
+                }
+            }
+        }
+
+        // --- ITEM COMPARISON TOOLTIP ---
+        if (hoveredInvIndex != -1 && hoveredInvIndex < (int)inventory.size()) {
+            const GearItem& item = inventory[hoveredInvIndex];
+            int ttW = 240, ttH = 120;
+            int ttX = (int)mousePos.x + 15;
+            int ttY = (int)mousePos.y + 15;
+
+            DrawRectangle(ttX, ttY, ttW, ttH, ColorAlpha(BLACK, 0.95f));
+            DrawRectangleLines(ttX, ttY, ttW, ttH, GetRarityColor(item.rarity));
+
+            DrawText(item.name.c_str(), ttX + 10, ttY + 10, 11, GetRarityColor(item.rarity));
+            DrawText(TextFormat("Type: %s", slotNames[(int)item.type]), ttX + 10, ttY + 28, 10, GRAY);
+            DrawText(TextFormat("ATK: +%.0f  DEF: +%.0f", item.bonusAttack, item.bonusDefense), ttX + 10, ttY + 48, 10, RAYWHITE);
+            DrawText(TextFormat("HP:  +%.0f  Speed: +%.0f", item.bonusHealth, item.bonusSpeed), ttX + 10, ttY + 66, 10, RAYWHITE);
+            DrawText("Click to Equip Item", ttX + 10, ttY + 95, 10, GREEN);
+        }
+
+        DrawText("[I] Close Equipment & Inventory", panelX + 25, panelY + panelH - 30, 11, GRAY);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Equipment System & Loot Beams");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+    player.pos = { 350.0f, 300.0f };
+    int playerGold = 250;
+
+    // Spawn Initial World Loot Drops in Town Hub for demonstration
+    gearMgr.SpawnWorldDrop({ 420.0f, 320.0f }, EQUIP_WEAPON, RARITY_RARE);
+    gearMgr.SpawnWorldDrop({ 480.0f, 320.0f }, EQUIP_ARMOR, RARITY_EPIC);
+    gearMgr.SpawnWorldDrop({ 540.0f, 320.0f }, EQUIP_RELIC, RARITY_LEGENDARY);
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+
+        // Dynamic Player Health Aggregation (Base + Talent + Equipment)
+        player.maxHealth = 100.0f + talentTree.bonusMaxHealth + gearMgr.totalBonusHP;
+
+        if (!talentTree.isOpen && !gearMgr.isInventoryOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            
+            if (portals.isTransitioning && portals.targetScene == SCENE_DUNGEON && portals.transitionAlpha >= 0.95f) {
+                minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+            }
+
+            audio.Update(dt);
+
+            if (portals.currentScene == SCENE_TOWN_HUB) {
+                town.Update(player.pos, playerGold);
+                if (!town.inDialogue && !town.inShop) {
+                    player.Update(dt, particles);
+                }
+            } else { // SCENE_DUNGEON
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                    if (boss.hp <= 0.0f) {
+                        portals.SpawnDungeonReturnPortal(boss.pos);
+                        // Spawn Legendary Gear Drop on Boss Death
+                        gearMgr.SpawnWorldDrop(boss.pos, EQUIP_WEAPON, RARITY_LEGENDARY);
+                        talentTree.availablePoints += 2;
+                    }
+                }
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                } else {
+                    dungeon.Draw();
+                    boss.Draw();
+                }
+
+                gearMgr.DrawWorldLootBeams(); // World-Space Loot Drop Beams
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // Screen-Space HUD & Overlays
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            town.DrawDialogueAndShopUI(screenW, screenH, playerGold);
+            town.DrawQuestTrackerHUD();
+        } else {
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        portals.DrawFloorHUD(screenW);
+        player.DrawHUD();
+
+        // Equipment HUD Toggle Prompt
+        DrawRectangle(10, 125, 240, 25, ColorAlpha(BLACK, 0.75f));
+        DrawRectangleLines(10, 125, 240, 25, GOLD);
+        DrawText("[I] Equipment & Gear", 20, 132, 11, GOLD);
+
+        // Fullscreen Overlays
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        portals.DrawTransitionOverlay(screenW, screenH);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
