@@ -1,0 +1,363 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <algorithm>
+
+enum ElementType {
+    ELEMENT_NONE = 0,
+    ELEMENT_FIRE,
+    ELEMENT_ICE,
+    ELEMENT_LIGHTNING
+};
+
+struct StatusEffect {
+    ElementType type;
+    float durationTimer = 0.0f;
+    float tickTimer = 0.0f;
+    float damagePerTick = 0.0f;
+    float intensity = 1.0f; // Slow factor or interrupt chance
+};
+
+struct TelegraphIndicator {
+    Vector2 position;
+    Vector2 direction;
+    float radius = 0.0f;
+    float angleCone = 0.0f; // For cone attacks
+    float chargeTimer = 0.0f;
+    float maxChargeTime = 1.0f;
+    bool active = false;
+    Color color = ColorAlpha(RED, 0.4f);
+};
+
+class CombatDepthManager {
+public:
+    // Hit-Stop Freeze Frame State
+    float hitStopTimer = 0.0f;
+
+    // Dodge Roll & i-Frame State
+    bool isRolling = false;
+    float rollTimer = 0.0f;
+    float rollDuration = 0.35f;
+    float iFrameWindow = 0.25f; // Invulnerable for first 0.25s of roll
+    Vector2 rollDirection = { 0.0f, 0.0f };
+    float rollSpeed = 380.0f;
+
+    // Stamina
+    float stamina = 100.0f;
+    float maxStamina = 100.0f;
+    float staminaRegenRate = 30.0f;
+
+    // Active Status Effects on Entities
+    std::vector<StatusEffect> playerStatusEffects;
+    std::vector<StatusEffect> bossStatusEffects;
+
+    // Active Boss Telegraph Overlays
+    std::vector<TelegraphIndicator> activeTelegraphs;
+
+    bool IsPlayerInvulnerable() const {
+        return isRolling && (rollTimer < iFrameWindow);
+    }
+
+    void TriggerHitStop(float durationSeconds) {
+        hitStopTimer = durationSeconds;
+    }
+
+    bool PerformDodgeRoll(Vector2 moveInput) {
+        if (isRolling || stamina < 25.0f) return false;
+
+        if (Vector2Length(moveInput) > 0.01f) {
+            rollDirection = Vector2Normalize(moveInput);
+        } else {
+            rollDirection = { 1.0f, 0.0f }; // Default direction
+        }
+
+        isRolling = true;
+        rollTimer = 0.0f;
+        stamina -= 25.0f;
+        return true;
+    }
+
+    void ApplyStatusEffect(std::vector<StatusEffect>& targetEffects, ElementType type, float duration, float dps = 0.0f) {
+        for (auto& eff : targetEffects) {
+            if (eff.type == type) {
+                eff.durationTimer = duration; // Refresh duration
+                return;
+            }
+        }
+        targetEffects.push_back({ type, duration, 0.0f, dps, 1.0f });
+    }
+
+    void AddTelegraphCircle(Vector2 pos, float radius, float duration) {
+        activeTelegraphs.push_back({ pos, {0,0}, radius, 0.0f, 0.0f, duration, true, ColorAlpha(RED, 0.35f) });
+    }
+
+    void AddTelegraphCone(Vector2 pos, Vector2 dir, float radius, float angleDegrees, float duration) {
+        activeTelegraphs.push_back({ pos, dir, radius, angleDegrees, 0.0f, duration, true, ColorAlpha(ORANGE, 0.35f) });
+    }
+
+    void Update(float dt, Vector2& playerPos, float& playerHealth, float& bossHealth) {
+        // 1. Update Hit-Stop
+        if (hitStopTimer > 0.0f) {
+            hitStopTimer -= dt;
+            return; // Freeze processing during hit-stop frame
+        }
+
+        // 2. Stamina Regeneration
+        if (!isRolling) {
+            stamina = std::min(maxStamina, stamina + staminaRegenRate * dt);
+        }
+
+        // 3. Update Dodge Roll Motion
+        if (isRolling) {
+            rollTimer += dt;
+            playerPos = Vector2Add(playerPos, Vector2Scale(rollDirection, rollSpeed * dt));
+
+            if (rollTimer >= rollDuration) {
+                isRolling = false;
+            }
+        }
+
+        // 4. Process Status Effects (Burn DoT, Freeze slow, Shock)
+        auto processEffects = [&](std::vector<StatusEffect>& effects, float& health, float speedMod) -> float {
+            float moveMultiplier = 1.0f;
+            for (auto it = effects.begin(); it != effects.end();) {
+                it->durationTimer -= dt;
+                it->tickTimer += dt;
+
+                if (it->type == ELEMENT_FIRE && it->tickTimer >= 0.5f) { // Burn tick
+                    health -= it->damagePerTick * 0.5f;
+                    it->tickTimer = 0.0f;
+                } else if (it->type == ELEMENT_ICE) {
+                    moveMultiplier *= 0.6f; // 40% Movement slow
+                }
+
+                if (it->durationTimer <= 0.0f) {
+                    it = effects.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            return moveMultiplier;
+        };
+
+        processEffects(playerStatusEffects, playerHealth, 1.0f);
+        processEffects(bossStatusEffects, bossHealth, 1.0f);
+
+        // 5. Update Boss Attack Telegraphs
+        for (auto it = activeTelegraphs.begin(); it != activeTelegraphs.end();) {
+            if (!it->active) {
+                it = activeTelegraphs.erase(it);
+                continue;
+            }
+
+            it->chargeTimer += dt;
+            if (it->chargeTimer >= it->maxChargeTime) {
+                it->active = false;
+            }
+            ++it;
+        }
+    }
+
+    void DrawTelegraphs() {
+        for (const auto& tele : activeTelegraphs) {
+            if (!tele.active) continue;
+
+            float chargeProgress = tele.chargeTimer / tele.maxChargeTime;
+
+            if (tele.angleCone > 0.01f) {
+                // Cone Telegraph
+                float startAngle = atan2f(tele.direction.y, tele.direction.x) * RAD2DEG - (tele.angleCone * 0.5f);
+                float endAngle = startAngle + tele.angleCone;
+
+                DrawCircleSector(tele.position, tele.radius, startAngle, endAngle, 24, tele.color);
+                DrawCircleSectorLines(tele.position, tele.radius, startAngle, endAngle, 24, RED);
+                DrawCircleSector(tele.position, tele.radius * chargeProgress, startAngle, endAngle, 24, ColorAlpha(RED, 0.6f));
+            } else {
+                // Circle Telegraph
+                DrawCircleV(tele.position, tele.radius, tele.color);
+                DrawCircleLines((int)tele.position.x, (int)tele.position.y, tele.radius, RED);
+                DrawCircleV(tele.position, tele.radius * chargeProgress, ColorAlpha(RED, 0.6f));
+            }
+        }
+    }
+
+    void DrawCombatHUD(int screenW) {
+        // Stamina Bar Below Health
+        int barW = 200, barH = 12;
+        int barX = 20, barY = 55;
+
+        DrawRectangle(barX, barY, barW, barH, ColorAlpha(BLACK, 0.8f));
+        DrawRectangle(barX, barY, (int)(barW * (stamina / maxStamina)), barH, GREEN);
+        DrawRectangleLines(barX, barY, barW, barH, DARKGREEN);
+        DrawText("STAMINA", barX + 5, barY + 2, 9, WHITE);
+
+        // Active Status Effect Badges
+        int iconX = barX;
+        int iconY = barY + 18;
+        for (const auto& eff : playerStatusEffects) {
+            Color badgeColor = RED;
+            const char* label = "BURN";
+            if (eff.type == ELEMENT_ICE) { badgeColor = SKYBLUE; label = "FROST"; }
+            else if (eff.type == ELEMENT_LIGHTNING) { badgeColor = YELLOW; label = "SHOCK"; }
+
+            DrawRectangle(iconX, iconY, 45, 16, ColorAlpha(badgeColor, 0.8f));
+            DrawText(label, iconX + 4, iconY + 3, 9, BLACK);
+            iconX += 50;
+        }
+    }
+// Inside Player::Update(float dt, ParticleEngine& particles)
+Vector2 moveInput = { 0.0f, 0.0f };
+if (IsKeyDown(KEY_W)) moveInput.y -= 1.0f;
+if (IsKeyDown(KEY_S)) moveInput.y += 1.0f;
+if (IsKeyDown(KEY_A)) moveInput.x -= 1.0f;
+if (IsKeyDown(KEY_D)) moveInput.x += 1.0f;
+
+// Trigger Dodge Roll
+if (IsKeyPressed(KEY_SPACE)) {
+    combatMgr.PerformDodgeRoll(moveInput);
+}
+
+// Spawn Roll Trail Shadows
+if (combatMgr.isRolling) {
+    particles.SpawnTrailShadow(this->pos, ColorAlpha(SKYBLUE, 0.4f));
+}
+// Inside Boss update loop when unleashing phase 2 slash attack:
+if (bossPhase == 2 && attackCooldown <= 0.0f) {
+    Vector2 dirToPlayer = Vector2Normalize(Vector2Subtract(playerPos, boss.pos));
+    
+    // 1. Telegraph Cone Attack Area (1.2s charge)
+    combatMgr.AddTelegraphCone(boss.pos, dirToPlayer, 180.0f, 75.0f, 1.2f);
+    attackCooldown = 2.5f;
+}
+
+// When Telegraph completes, trigger damage check
+if (telegraphCompleted) {
+    if (!combatMgr.IsPlayerInvulnerable()) {
+        float damage = 35.0f;
+        playerHealth -= damage;
+        combatMgr.TriggerHitStop(0.08f); // 80ms freeze frame on heavy hit
+        cameraMgr.AddScreenShake(12.0f);   // Impact Shake
+        combatMgr.ApplyStatusEffect(combatMgr.playerStatusEffects, ELEMENT_FIRE, 4.0f, 6.0f); // Apply Burn
+    }
+}
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Dynamic Combat Depth & Boss Mechanics");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+    player.pos = { 350.0f, 300.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+
+        // Update Combat Depth System (i-frames, status effects, hit-stop)
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        // Only process game logic if hit-stop isn't active
+        if (combatMgr.hitStopTimer <= 0.0f && !talentTree.isOpen && !gearMgr.isInventoryOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (portals.currentScene == SCENE_TOWN_HUB) {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            } else {
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                } else {
+                    dungeon.Draw();
+                    combatMgr.DrawTelegraphs(); // Render Boss Attack Telegraphs
+                    boss.Draw();
+                }
+
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
