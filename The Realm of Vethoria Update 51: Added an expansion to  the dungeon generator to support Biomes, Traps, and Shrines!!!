@@ -1,0 +1,354 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+enum BiomeType {
+    BIOME_CATACOMBS = 0,
+    BIOME_LAVA_CAVERNS,
+    BIOME_ICE_VAULTS,
+    BIOME_COUNT
+};
+
+enum TrapType {
+    TRAP_SPIKE = 0,
+    TRAP_LAVA_JET,
+    TRAP_ICE_SPIKE
+};
+
+enum ShrineType {
+    SHRINE_MIGHT = 0,   // Bonus Attack
+    SHRINE_HASTE,       // Bonus Move Speed
+    SHRINE_PROTECTION,  // Damage Reduction
+    SHRINE_RENEWAL      // Health Regeneration
+};
+
+struct BiomeTheme {
+    BiomeType type;
+    std::string name;
+    Color wallColor;
+    Color floorColor;
+    Color accentColor;
+    Color ambientLightColor;
+};
+
+struct HazardTrap {
+    Vector2 pos;
+    TrapType type;
+    bool active = false;
+    float stateTimer = 0.0f;
+    float triggerInterval = 2.0f;
+    float activeDuration = 1.0f;
+    float damage = 15.0f;
+    float radius = 24.0f;
+};
+
+struct ShrineRoom {
+    Vector2 pos;
+    ShrineType type;
+    bool used = false;
+    float glowTimer = 0.0f;
+};
+
+struct ShrineBuff {
+    ShrineType type;
+    float remainingDuration = 0.0f;
+    float value = 0.0f;
+};
+
+class BiomeAndTrapManager {
+public:
+    BiomeType currentBiome = BIOME_CATACOMBS;
+    std::vector<HazardTrap> traps;
+    std::vector<ShrineRoom> shrines;
+    std::vector<ShrineBuff> activeBuffs;
+
+    BiomeTheme GetBiomeTheme(BiomeType type) const {
+        switch (type) {
+            case BIOME_LAVA_CAVERNS:
+                return { BIOME_LAVA_CAVERNS, "Lava Caverns", GetColor(0x3A1A1AFF), GetColor(0x1F1010FF), ORANGE, GetColor(0x2A1010FF) };
+            case BIOME_ICE_VAULTS:
+                return { BIOME_ICE_VAULTS, "Ice Vaults", GetColor(0x1A2A3AFF), GetColor(0x101A26FF), SKYBLUE, GetColor(0x101828FF) };
+            case BIOME_CATACOMBS:
+            default:
+                return { BIOME_CATACOMBS, "Catacombs", GetColor(0x2A2A30FF), GetColor(0x16161CFF), PURPLE, GetColor(0x121218FF) };
+        }
+    }
+
+    void PopulateDungeonFeatures(const std::vector<Vector2>& floorTiles, BiomeType biome) {
+        currentBiome = biome;
+        traps.clear();
+        shrines.clear();
+
+        if (floorTiles.empty()) return;
+
+        // Spawn Traps on ~5% of floor tiles
+        for (const auto& tile : floorTiles) {
+            if (GetRandomValue(1, 100) <= 5) {
+                HazardTrap trap;
+                trap.pos = tile;
+                trap.type = (biome == BIOME_LAVA_CAVERNS) ? TRAP_LAVA_JET : 
+                            (biome == BIOME_ICE_VAULTS) ? TRAP_ICE_SPIKE : TRAP_SPIKE;
+                trap.triggerInterval = (float)GetRandomValue(15, 30) * 0.1f;
+                trap.damage = 10.0f + (int)biome * 5.0f;
+                traps.push_back(trap);
+            }
+        }
+
+        // Spawn 1-2 Shrines per floor
+        int shrineCount = GetRandomValue(1, 2);
+        for (int i = 0; i < shrineCount && !floorTiles.empty(); i++) {
+            int idx = GetRandomValue(0, (int)floorTiles.size() - 1);
+            ShrineRoom shrine;
+            shrine.pos = floorTiles[idx];
+            shrine.type = (ShrineType)GetRandomValue(0, 3);
+            shrine.used = false;
+            shrines.push_back(shrine);
+        }
+    }
+
+    void ApplyShrineBuff(ShrineType type) {
+        for (auto& buff : activeBuffs) {
+            if (buff.type == type) {
+                buff.remainingDuration = 30.0f; // Refresh duration
+                return;
+            }
+        }
+        activeBuffs.push_back({ type, 30.0f, 1.5f });
+    }
+
+    void Update(float dt, Vector2 playerPos, float& playerHealth) {
+        // 1. Update Traps
+        for (auto& trap : traps) {
+            trap.stateTimer += dt;
+            if (trap.stateTimer >= trap.triggerInterval) {
+                trap.active = !trap.active;
+                trap.stateTimer = 0.0f;
+            }
+
+            // Damage player if walking over active trap
+            if (trap.active && CheckCollisionCircles(playerPos, 16.0f, trap.pos, trap.radius)) {
+                playerHealth -= trap.damage * dt; // Continuous tick damage while active
+            }
+        }
+
+        // 2. Update Shrine Interaction
+        for (auto& shrine : shrines) {
+            shrine.glowTimer += dt * 2.0f;
+            if (!shrine.used && CheckCollisionCircles(playerPos, 20.0f, shrine.pos, 28.0f)) {
+                if (IsKeyPressed(KEY_E)) {
+                    shrine.used = true;
+                    ApplyShrineBuff(shrine.type);
+                }
+            }
+        }
+
+        // 3. Update Active Shrine Buffs
+        for (auto it = activeBuffs.begin(); it != activeBuffs.end();) {
+            it->remainingDuration -= dt;
+            if (it->remainingDuration <= 0.0f) {
+                it = activeBuffs.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void DrawTrapsAndShrines() {
+        // Draw Traps
+        for (const auto& trap : traps) {
+            Color trapColor = (trap.type == TRAP_LAVA_JET) ? ORANGE : 
+                              (trap.type == TRAP_ICE_SPIKE) ? SKYBLUE : GRAY;
+
+            DrawCircleV(trap.pos, trap.radius, ColorAlpha(trapColor, 0.2f));
+            DrawCircleLines((int)trap.pos.x, (int)trap.pos.y, trap.radius, trapColor);
+
+            if (trap.active) {
+                float pulse = sinf(GetTime() * 10.0f) * 4.0f;
+                DrawCircleV(trap.pos, trap.radius - 4.0f + pulse, ColorAlpha(trapColor, 0.7f));
+            }
+        }
+
+        // Draw Shrines
+        for (const auto& shrine : shrines) {
+            Color shrineColor = (shrine.type == SHRINE_MIGHT) ? RED :
+                                (shrine.type == SHRINE_HASTE) ? YELLOW :
+                                (shrine.type == SHRINE_PROTECTION) ? BLUE : GREEN;
+
+            float pulse = sinf(shrine.glowTimer) * 4.0f;
+
+            if (!shrine.used) {
+                DrawCircleV(shrine.pos, 22.0f + pulse, ColorAlpha(shrineColor, 0.3f));
+                DrawRectangle((int)shrine.pos.x - 12, (int)shrine.pos.y - 18, 24, 36, GetColor(0x222230FF));
+                DrawRectangleLines((int)shrine.pos.x - 12, (int)shrine.pos.y - 18, 24, 36, shrineColor);
+                DrawCircleV(shrine.pos, 6.0f, shrineColor);
+
+                // Prompt
+                DrawRectangle((int)shrine.pos.x - 40, (int)shrine.pos.y - 35, 80, 16, ColorAlpha(BLACK, 0.8f));
+                DrawText("[E] Shrine", (int)shrine.pos.x - MeasureText("[E] Shrine", 10) / 2, (int)shrine.pos.y - 32, 10, shrineColor);
+            } else {
+                DrawRectangle((int)shrine.pos.x - 12, (int)shrine.pos.y - 18, 24, 36, GetColor(0x14141CFF));
+                DrawRectangleLines((int)shrine.pos.x - 12, (int)shrine.pos.y - 18, 24, 36, DARKGRAY);
+            }
+        }
+    }
+
+    void DrawBuffHUD() {
+        int startX = 20;
+        int startY = 80;
+
+        for (const auto& buff : activeBuffs) {
+            const char* label = (buff.type == SHRINE_MIGHT) ? "MIGHT (+ATK)" :
+                                (buff.type == SHRINE_HASTE) ? "HASTE (+SPD)" :
+                                (buff.type == SHRINE_PROTECTION) ? "AEGIS (+DEF)" : "RENEWAL (REGEN)";
+
+            Color c = (buff.type == SHRINE_MIGHT) ? RED :
+                      (buff.type == SHRINE_HASTE) ? YELLOW :
+                      (buff.type == SHRINE_PROTECTION) ? BLUE : GREEN;
+
+            DrawRectangle(startX, startY, 140, 20, ColorAlpha(BLACK, 0.75f));
+            DrawRectangleLines(startX, startY, 140, 20, c);
+            DrawText(TextFormat("%s %.0fs", label, buff.remainingDuration), startX + 5, startY + 4, 9, c);
+
+            startY += 24;
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Biomes, Traps & Shrines");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+    
+    // Initialize Biome Features
+    std::vector<Vector2> floorTiles;
+    for (int r = 0; r < DUNGEON_ROWS; r++) {
+        for (int c = 0; c < DUNGEON_COLS; c++) {
+            if (dungeon.grid[r][c] == TILE_FLOOR) {
+                floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+            }
+        }
+    }
+    biomeMgr.PopulateDungeonFeatures(floorTiles, BIOME_LAVA_CAVERNS);
+
+    player.pos = { 350.0f, 300.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        if (combatMgr.hitStopTimer <= 0.0f && !talentTree.isOpen && !gearMgr.isInventoryOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                } else {
+                    dungeon.Draw();
+                    biomeMgr.DrawTrapsAndShrines(); // Render Hazards & Shrines
+                    combatMgr.DrawTelegraphs();
+                    boss.Draw();
+                }
+
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        biomeMgr.DrawBuffHUD();
+
+        if (portals.currentScene == SCENE_DUNGEON) {
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+            
+            // Biome Title Overlay
+            BiomeTheme theme = biomeMgr.GetBiomeTheme(biomeMgr.currentBiome);
+            DrawText(TextFormat("BIOME: %s", theme.name.c_str()), 20, 155, 11, theme.accentColor);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
