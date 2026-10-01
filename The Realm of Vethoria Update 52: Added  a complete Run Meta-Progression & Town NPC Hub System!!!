@@ -1,0 +1,372 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+#include <vector>
+#include <algorithm>
+
+enum VendorType {
+    VENDOR_BLACKSMITH = 0,
+    VENDOR_ALCHEMIST,
+    VENDOR_ENCHANTER
+};
+
+struct UpgradeNode {
+    std::string id;
+    std::string name;
+    std::string description;
+    int currentLevel = 0;
+    int maxLevel = 5;
+    int baseCostGold = 100;
+    int baseCostSouls = 1;
+    float statBonusPerLevel = 0.05f; // e.g. +5% per level
+
+    int GetGoldCost() const { return baseCostGold * (currentLevel + 1); }
+    int GetSoulCost() const { return baseCostSouls * (currentLevel + 1); }
+    bool IsMaxed() const { return currentLevel >= maxLevel; }
+};
+
+struct TownNPC {
+    VendorType type;
+    std::string name;
+    std::string title;
+    Vector2 position;
+    Color themeColor;
+    std::vector<UpgradeNode> upgrades;
+};
+
+class TownMetaProgressionManager {
+public:
+    int bossSouls = 0; // Rare meta-currency retained across runs
+    bool isUIOpen = false;
+    VendorType activeVendor = VENDOR_BLACKSMITH;
+    int selectedUpgradeIndex = 0;
+
+    std::vector<TownNPC> npcs;
+
+    void InitNPCs() {
+        npcs.clear();
+
+        // 1. Blacksmith - Gear & Weapon Mastery
+        TownNPC blacksmith = {
+            VENDOR_BLACKSMITH, "Kaelen", "Master Blacksmith", { 450.0f, 320.0f }, RED,
+            {
+                { "bs_dmg", "Weapon Tempering", "+5% Base Physical Damage per rank.", 0, 5, 150, 1, 0.05f },
+                { "bs_crit", "Sharp Edge", "+3% Critical Strike Chance per rank.", 0, 5, 200, 2, 0.03f },
+                { "bs_armor", "Reinforced Plating", "+10 Base Armor Rating per rank.", 0, 5, 120, 1, 10.0f }
+            }
+        };
+
+        // 2. Alchemist - Potions & Resistance
+        TownNPC alchemist = {
+            VENDOR_ALCHEMIST, "Lyra", "Grand Alchemist", { 720.0f, 250.0f }, GREEN,
+            {
+                { "alc_pot_heal", "Elixir Potency", "Health Potions heal +15 HP per rank.", 0, 5, 100, 1, 15.0f },
+                { "alc_pot_cap", "Belt Pouch", "+1 Extra Potion Slot per rank.", 0, 3, 250, 2, 1.0f },
+                { "alc_res", "Elemental Resistance", "+5% Fire & Ice Resistance per rank.", 0, 5, 180, 1, 0.05f }
+            }
+        };
+
+        // 3. Enchanter - Persistent Soul Unlocks
+        TownNPC enchanter = {
+            VENDOR_ENCHANTER, "Vaelen", "Soul Enchanter", { 600.0f, 480.0f }, PURPLE,
+            {
+                { "enc_iframe", "Phase Mastery", "+0.03s Dodge Roll i-Frame Window per rank.", 0, 3, 300, 3, 0.03f },
+                { "enc_stamina", "Soul Endurance", "+15 Max Stamina per rank.", 0, 5, 220, 2, 15.0f },
+                { "enc_gold", "Fortune's Blessing", "+10% Bonus Gold Gain per rank.", 0, 5, 150, 1, 0.10f }
+            }
+        };
+
+        npcs.push_back(blacksmith);
+        npcs.push_back(alchemist);
+        npcs.push_back(enchanter);
+    }
+
+    void CheckNPCInteractions(Vector2 playerPos) {
+        if (IsKeyPressed(KEY_E)) {
+            if (isUIOpen) {
+                isUIOpen = false; // Toggle close if open
+                return;
+            }
+
+            for (const auto& npc : npcs) {
+                if (CheckCollisionCircles(playerPos, 24.0f, npc.position, 40.0f)) {
+                    activeVendor = npc.type;
+                    selectedUpgradeIndex = 0;
+                    isUIOpen = true;
+                    break;
+                }
+            }
+        }
+
+        if (IsKeyPressed(KEY_ESCAPE) && isUIOpen) {
+            isUIOpen = false;
+        }
+    }
+
+    bool PurchaseUpgrade(UpgradeNode& node, int& playerGold) {
+        if (node.IsMaxed()) return false;
+
+        int goldCost = node.GetGoldCost();
+        int soulCost = node.GetSoulCost();
+
+        if (playerGold >= goldCost && bossSouls >= soulCost) {
+            playerGold -= goldCost;
+            bossSouls -= soulCost;
+            node.currentLevel++;
+            return true;
+        }
+        return false;
+    }
+
+    TownNPC* GetNPC(VendorType type) {
+        for (auto& npc : npcs) {
+            if (npc.type == type) return &npc;
+        }
+        return nullptr;
+    }
+
+    void DrawWorldNPCs(Vector2 playerPos) {
+        for (const auto& npc : npcs) {
+            bool inRange = CheckCollisionCircles(playerPos, 24.0f, npc.position, 40.0f);
+
+            // Base platform
+            DrawCircleV(npc.position, 28.0f, ColorAlpha(npc.themeColor, 0.25f));
+            DrawCircleLines((int)npc.position.x, (int)npc.position.y, 28.0f, npc.themeColor);
+            
+            // NPC Pillar
+            DrawRectangle((int)npc.position.x - 12, (int)npc.position.y - 18, 24, 36, GetColor(0x202028FF));
+            DrawRectangleLines((int)npc.position.x - 12, (int)npc.position.y - 18, 24, 36, npc.themeColor);
+            DrawCircleV({ npc.position.x, npc.position.y - 24.0f }, 10.0f, npc.themeColor);
+
+            // Nameplate
+            DrawRectangle((int)npc.position.x - 50, (int)npc.position.y - 50, 100, 16, ColorAlpha(BLACK, 0.8f));
+            DrawText(npc.name.c_str(), (int)npc.position.x - MeasureText(npc.name.c_str(), 10) / 2, (int)npc.position.y - 47, 10, WHITE);
+
+            if (inRange && !isUIOpen) {
+                DrawRectangle((int)npc.position.x - 45, (int)npc.position.y + 32, 90, 16, ColorAlpha(BLACK, 0.85f));
+                DrawRectangleLines((int)npc.position.x - 45, (int)npc.position.y + 32, 90, 16, npc.themeColor);
+                DrawText("[E] Talk", (int)npc.position.x - MeasureText("[E] Talk", 10) / 2, (int)npc.position.y + 35, 10, YELLOW);
+            }
+        }
+    }
+
+    void DrawVendorUI(int screenW, int screenH, int& playerGold, Vector2 mousePos) {
+        if (!isUIOpen) return;
+
+        TownNPC* npc = GetNPC(activeVendor);
+        if (!npc) return;
+
+        int uiW = 600, uiH = 420;
+        int uiX = (screenW - uiW) / 2;
+        int uiY = (screenH - uiH) / 2;
+
+        // Overlay Dim
+        DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.6f));
+
+        // Main Panel
+        DrawRectangle(uiX, uiY, uiW, uiH, GetColor(0x121218FF));
+        DrawRectangleLines(uiX, uiY, uiW, uiH, npc->themeColor);
+
+        // Header
+        DrawRectangle(uiX, uiY, uiW, 45, GetColor(0x1C1C26FF));
+        DrawText(TextFormat("%s - %s", npc->name.c_str(), npc->title.c_str()), uiX + 20, uiY + 12, 18, npc->themeColor);
+        DrawText("[ESC] Close", uiX + uiW - 90, uiY + 16, 11, LIGHTGRAY);
+
+        // Currencies Header
+        DrawText(TextFormat("Gold: %d", playerGold), uiX + 20, uiY + 55, 14, GOLD);
+        DrawText(TextFormat("Boss Souls: %d", bossSouls), uiX + 160, uiY + 55, 14, PURPLE);
+
+        // Render Upgrades List
+        int cardY = uiY + 85;
+        for (size_t i = 0; i < npc->upgrades.size(); i++) {
+            auto& node = npc->upgrades[i];
+
+            Rectangle cardBounds = { (float)uiX + 20, (float)cardY, (float)uiW - 40, 90.0f };
+            bool isHovered = CheckCollisionPointRec(mousePos, cardBounds);
+
+            Color cardBg = isHovered ? GetColor(0x222230FF) : GetColor(0x181822FF);
+            DrawRectangleRec(cardBounds, cardBg);
+            DrawRectangleLinesEx(cardBounds, 1.0f, isHovered ? npc->themeColor : DARKGRAY);
+
+            // Title & Rank
+            DrawText(node.name.c_str(), (int)cardBounds.x + 15, (int)cardBounds.y + 12, 15, WHITE);
+            DrawText(TextFormat("Rank %d/%d", node.currentLevel, node.maxLevel), (int)cardBounds.x + cardBounds.width - 100, (int)cardBounds.y + 12, 12, node.IsMaxed() ? GREEN : SKYBLUE);
+
+            // Description
+            DrawText(node.description.c_str(), (int)cardBounds.x + 15, (int)cardBounds.y + 35, 11, GRAY);
+
+            // Costs & Purchase Button
+            if (!node.IsMaxed()) {
+                int gCost = node.GetGoldCost();
+                int sCost = node.GetSoulCost();
+
+                bool canAfford = (playerGold >= gCost && bossSouls >= sCost);
+
+                DrawText(TextFormat("Cost: %d Gold, %d Souls", gCost, sCost), (int)cardBounds.x + 15, (int)cardBounds.y + 62, 11, canAfford ? YELLOW : RED);
+
+                Rectangle btnRec = { cardBounds.x + cardBounds.width - 110, cardBounds.y + 52, 95, 26 };
+                bool btnHover = CheckCollisionPointRec(mousePos, btnRec);
+
+                DrawRectangleRec(btnRec, canAfford ? (btnHover ? npc->themeColor : GetColor(0x282838FF)) : GetColor(0x1F1F28FF));
+                DrawRectangleLinesEx(btnRec, 1.0f, canAfford ? npc->themeColor : DARKGRAY);
+                DrawText("Upgrade", (int)btnRec.x + 18, (int)btnRec.y + 7, 11, canAfford ? WHITE : GRAY);
+
+                if (canAfford && btnHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    PurchaseUpgrade(node, playerGold);
+                }
+            } else {
+                DrawText("MAXED OUT", (int)cardBounds.x + cardBounds.width - 100, (int)cardBounds.y + 60, 11, GREEN);
+            }
+
+            cardY += 100;
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Meta-Progression & Town Vendors");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+
+    // Grant starting currency for testing meta-upgrades
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+    
+    std::vector<Vector2> floorTiles;
+    for (int r = 0; r < DUNGEON_ROWS; r++) {
+        for (int c = 0; c < DUNGEON_COLS; c++) {
+            if (dungeon.grid[r][c] == TILE_FLOOR) {
+                floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+            }
+        }
+    }
+    biomeMgr.PopulateDungeonFeatures(floorTiles, BIOME_LAVA_CAVERNS);
+    player.pos = { 350.0f, 300.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        // Town Vendor Checks
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos); // Draw Vendor NPCs
+                } else {
+                    dungeon.Draw();
+                    biomeMgr.DrawTrapsAndShrines();
+                    combatMgr.DrawTelegraphs();
+                    boss.Draw();
+                }
+
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos); // Vendor UI Overlay
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
