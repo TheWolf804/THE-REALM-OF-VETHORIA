@@ -1,0 +1,350 @@
+#pragma once
+#include "raylib.h"
+#include <fstream>
+#include <vector>
+#include <string>
+#include <cstring>
+#include <iostream>
+
+#define SAVE_FILE_PATH "savegame.dat"
+#define SAVE_VERSION 1
+
+// Compact POD structures for file serialization
+struct SavedUpgradeNode {
+    char id[32];
+    int currentLevel;
+};
+
+struct SavedEquipment {
+    int slotType;  // Weapon, Armor, Accessory
+    int rarity;    // Common, Rare, Legendary
+    int statBonus;
+    char name[32];
+};
+
+struct SavedTalentNode {
+    char id[32];
+    bool unlocked;
+};
+
+struct SaveDataHeader {
+    int version = SAVE_VERSION;
+    int magic = 0x56455448; // "VETH" in ASCII
+};
+
+struct SaveDataPayload {
+    // Player Stats & Meta Currencies
+    int playerGold = 0;
+    int bossSouls = 0;
+    float playerHealth = 100.0f;
+    float playerMaxHealth = 100.0f;
+
+    // Upgrades Count & Buffer
+    int upgradeCount = 0;
+    SavedUpgradeNode upgrades[16];
+
+    // Equipment Count & Buffer
+    int equippedCount = 0;
+    SavedEquipment equippedItems[8];
+
+    // Talents Count & Buffer
+    int talentCount = 0;
+    SavedTalentNode talents[16];
+};
+
+class SaveManager {
+public:
+    static bool SaveGame(int gold, int souls, float health, float maxHealth, 
+                        const std::vector<SavedUpgradeNode>& vendorUpgrades,
+                        const std::vector<SavedEquipment>& equipment,
+                        const std::vector<SavedTalentNode>& talentTree) {
+        
+        SaveDataHeader header;
+        SaveDataPayload payload;
+
+        payload.playerGold = gold;
+        payload.bossSouls = souls;
+        payload.playerHealth = health;
+        payload.playerMaxHealth = maxHealth;
+
+        // Serialize Upgrades
+        payload.upgradeCount = (int)std::min(vendorUpgrades.size(), (size_t)16);
+        for (int i = 0; i < payload.upgradeCount; i++) {
+            payload.upgrades[i] = vendorUpgrades[i];
+        }
+
+        // Serialize Equipment
+        payload.equippedCount = (int)std::min(equipment.size(), (size_t)8);
+        for (int i = 0; i < payload.equippedCount; i++) {
+            payload.equippedItems[i] = equipment[i];
+        }
+
+        // Serialize Talents
+        payload.talentCount = (int)std::min(talentTree.size(), (size_t)16);
+        for (int i = 0; i < payload.talentCount; i++) {
+            payload.talents[i] = talentTree[i];
+        }
+
+        // Write Binary File
+        std::ofstream file(SAVE_FILE_PATH, std::ios::binary);
+        if (!file.is_open()) return false;
+
+        file.write(reinterpret_cast<const char*>(&header), sizeof(SaveDataHeader));
+        file.write(reinterpret_cast<const char*>(&payload), sizeof(SaveDataPayload));
+        file.close();
+
+        return true;
+    }
+
+    static bool LoadGame(int& gold, int& souls, float& health, float& maxHealth,
+                         std::vector<SavedUpgradeNode>& vendorUpgrades,
+                         std::vector<SavedEquipment>& equipment,
+                         std::vector<SavedTalentNode>& talentTree) {
+        
+        std::ifstream file(SAVE_FILE_PATH, std::ios::binary);
+        if (!file.is_open()) return false;
+
+        SaveDataHeader header;
+        file.read(reinterpret_cast<char*>(&header), sizeof(SaveDataHeader));
+
+        // Validate Header Magic & Version
+        if (header.magic != 0x56455448 || header.version != SAVE_VERSION) {
+            file.close();
+            return false;
+        }
+
+        SaveDataPayload payload;
+        file.read(reinterpret_cast<char*>(&payload), sizeof(SaveDataPayload));
+        file.close();
+
+        // Restore Currencies
+        gold = payload.playerGold;
+        souls = payload.bossSouls;
+        health = payload.playerHealth;
+        maxHealth = payload.playerMaxHealth;
+
+        // Restore Upgrades
+        vendorUpgrades.clear();
+        for (int i = 0; i < payload.upgradeCount; i++) {
+            vendorUpgrades.push_back(payload.upgrades[i]);
+        }
+
+        // Restore Equipment
+        equipment.clear();
+        for (int i = 0; i < payload.equippedCount; i++) {
+            equipment.push_back(payload.equippedItems[i]);
+        }
+
+        // Restore Talents
+        talentTree.clear();
+        for (int i = 0; i < payload.talentCount; i++) {
+            talentTree.push_back(payload.talents[i]);
+        }
+
+        return true;
+    }
+
+    static bool SaveExists() {
+        return FileExists(SAVE_FILE_PATH);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Save & Load Persistence System");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+    
+    std::vector<Vector2> floorTiles;
+    for (int r = 0; r < DUNGEON_ROWS; r++) {
+        for (int c = 0; c < DUNGEON_COLS; c++) {
+            if (dungeon.grid[r][c] == TILE_FLOOR) {
+                floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+            }
+        }
+    }
+    biomeMgr.PopulateDungeonFeatures(floorTiles, BIOME_LAVA_CAVERNS);
+    player.pos = { 350.0f, 300.0f };
+
+    float saveNotificationTimer = 0.0f;
+    std::string saveNotificationText = "";
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        if (saveNotificationTimer > 0.0f) saveNotificationTimer -= dt;
+
+        // Quick Save (F5)
+        if (IsKeyPressed(KEY_F5)) {
+            std::vector<SavedUpgradeNode> savedUpgrades;
+            for (const auto& npc : metaMgr.npcs) {
+                for (const auto& node : npc.upgrades) {
+                    SavedUpgradeNode su;
+                    strncpy(su.id, node.id.c_str(), sizeof(su.id));
+                    su.currentLevel = node.currentLevel;
+                    savedUpgrades.push_back(su);
+                }
+            }
+
+            std::vector<SavedEquipment> savedGear; // Mock equipment payload
+            std::vector<SavedTalentNode> savedTalents; // Mock talent payload
+
+            if (SaveManager::SaveGame(player.gold, metaMgr.bossSouls, player.health, player.maxHealth, savedUpgrades, savedGear, savedTalents)) {
+                saveNotificationText = "GAME SAVED SUCCESSFULLY (F5)";
+                saveNotificationTimer = 2.5f;
+            }
+        }
+
+        // Quick Load (F9)
+        if (IsKeyPressed(KEY_F9)) {
+            std::vector<SavedUpgradeNode> loadedUpgrades;
+            std::vector<SavedEquipment> loadedGear;
+            std::vector<SavedTalentNode> loadedTalents;
+
+            if (SaveManager::LoadGame(player.gold, metaMgr.bossSouls, player.health, player.maxHealth, loadedUpgrades, loadedGear, loadedTalents)) {
+                // Apply Loaded Upgrades back to Vendor System
+                for (const auto& lu : loadedUpgrades) {
+                    for (auto& npc : metaMgr.npcs) {
+                        for (auto& node : npc.upgrades) {
+                            if (node.id == lu.id) {
+                                node.currentLevel = lu.currentLevel;
+                            }
+                        }
+                    }
+                }
+                saveNotificationText = "GAME LOADED SUCCESSFULLY (F9)";
+                saveNotificationTimer = 2.5f;
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    biomeMgr.DrawTrapsAndShrines();
+                    combatMgr.DrawTelegraphs();
+                    boss.Draw();
+                }
+
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, ORANGE, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+
+        // Save / Load Quick Help & Notification Toast
+        DrawText("F5: Quick Save  |  F9: Quick Load", screenW - 250, 15, 11, RAYWHITE);
+
+        if (saveNotificationTimer > 0.0f) {
+            DrawRectangle(screenW / 2 - 160, screenH - 60, 320, 30, ColorAlpha(BLACK, 0.85f));
+            DrawRectangleLines(screenW / 2 - 160, screenH - 60, 320, 30, GREEN);
+            DrawText(saveNotificationText.c_str(), screenW / 2 - MeasureText(saveNotificationText.c_str(), 11) / 2, screenH - 50, 11, GREEN);
+        }
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
