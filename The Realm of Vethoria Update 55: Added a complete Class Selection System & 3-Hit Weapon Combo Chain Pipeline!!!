@@ -1,0 +1,473 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "ParticleEngine.h"
+#include <string>
+#include <vector>
+
+enum CharacterClassType {
+    CLASS_WARRIOR = 0,
+    CLASS_ROGUE,
+    CLASS_ELEMENTALIST
+};
+
+struct ClassProfile {
+    CharacterClassType type;
+    std::string name;
+    std::string description;
+    float maxHealth;
+    float moveSpeed;
+    float baseDamage;
+    float critChance;
+    Color themeColor;
+    
+    // Ability Info
+    std::string abilityName;
+    std::string abilityDesc;
+    float abilityCooldown;
+};
+
+enum ComboStage {
+    COMBO_IDLE = 0,
+    COMBO_HIT_1,
+    COMBO_HIT_2,
+    COMBO_HIT_3_FINISHER
+};
+
+struct AttackHitbox {
+    Vector2 center;
+    float radius;
+    float damageMultiplier;
+    float knockbackForce;
+    bool active;
+};
+
+class ClassAndComboManager {
+public:
+    CharacterClassType currentClass = CLASS_WARRIOR;
+    std::vector<ClassProfile> classProfiles;
+
+    // Combo State Machine
+    ComboStage currentComboStage = COMBO_IDLE;
+    float comboTimer = 0.0f;
+    float comboBufferTimer = 0.0f;
+    float comboResetWindow = 0.8f;  // Time to chain next hit
+    float attackDurationTimer = 0.0f;
+    Vector2 attackDirection = { 1.0f, 0.0f };
+    AttackHitbox activeHitbox = { {0, 0}, 0.0f, 0.0f, 0.0f, false };
+
+    // Active Ability Cooldowns
+    float abilityCooldownTimer = 0.0f;
+    bool isClassSelectionOpen = false;
+
+    void Init() {
+        classProfiles = {
+            {
+                CLASS_WARRIOR, "Warrior", "Tanky brawler focused on high armor, heavy staggering attacks, and whirlwinds.",
+                150.0f, 180.0f, 25.0f, 0.10f, RED,
+                "Whirlwind", "Spin in a circle dealing 100% weapon damage to all nearby enemies.", 6.0f
+            },
+            {
+                CLASS_ROGUE, "Rogue", "Agile assassin with high critical strike chance, rapid dashes, and shadow strikes.",
+                90.0f, 240.0f, 20.0f, 0.35f, GREEN,
+                "Shadow Step", "Teleport behind the target/direction and deliver an instant critical slash.", 4.0f
+            },
+            {
+                CLASS_ELEMENTALIST, "Elementalist", "Ranged spellcaster unleashing elemental shockwaves and frost crowd control.",
+                80.0f, 200.0f, 30.0f, 0.15f, SKYBLUE,
+                "Frost Nova", "Release an icy shockwave freezing and pushing back all surrounding foes.", 8.0f
+            }
+        };
+    }
+
+    ClassProfile GetCurrentProfile() const {
+        return classProfiles[(int)currentClass];
+    }
+
+    void TriggerAttack(Vector2 playerPos, Vector2 aimDir) {
+        if (attackDurationTimer > 0.0f) return; // Currently mid-swing
+
+        if (Vector2Length(aimDir) > 0.1f) {
+            attackDirection = Vector2Normalize(aimDir);
+        }
+
+        // Advance Combo Stage
+        switch (currentComboStage) {
+            case COMBO_IDLE:
+                currentComboStage = COMBO_HIT_1;
+                break;
+            case COMBO_HIT_1:
+                currentComboStage = COMBO_HIT_2;
+                break;
+            case COMBO_HIT_2:
+                currentComboStage = COMBO_HIT_3_FINISHER;
+                break;
+            case COMBO_HIT_3_FINISHER:
+                currentComboStage = COMBO_HIT_1;
+                break;
+        }
+
+        comboTimer = comboResetWindow;
+        attackDurationTimer = 0.25f; // Duration of active swing hitbox
+
+        // Set Hitbox based on Combo Stage
+        float reach = 45.0f;
+        float mult = 1.0f;
+        float knockback = 150.0f;
+        float radius = 30.0f;
+
+        if (currentComboStage == COMBO_HIT_2) {
+            reach = 50.0f;
+            mult = 1.35f;
+            knockback = 250.0f;
+            radius = 35.0f;
+        } else if (currentComboStage == COMBO_HIT_3_FINISHER) {
+            reach = 65.0f;
+            mult = 2.2f; // Heavy finisher damage
+            knockback = 500.0f; // Massive knockback
+            radius = 55.0f;
+        }
+
+        activeHitbox = {
+            Vector2Add(playerPos, Vector2Scale(attackDirection, reach)),
+            radius,
+            mult,
+            knockback,
+            true
+        };
+    }
+
+    void TriggerActiveAbility(Vector2& playerPos, ParticleEngine& particles) {
+        if (abilityCooldownTimer > 0.0f) return;
+
+        ClassProfile profile = GetCurrentProfile();
+        abilityCooldownTimer = profile.abilityCooldown;
+
+        if (currentClass == CLASS_WARRIOR) {
+            // Whirlwind AOE
+            for (int i = 0; i < 32; i++) {
+                float angle = (float)i * (2.0f * PI / 32.0f);
+                Vector2 dir = { cosf(angle), sinf(angle) };
+                particles.SpawnParticle(Vector2Add(playerPos, Vector2Scale(dir, 40.0f)), Vector2Scale(dir, 180.0f), RED, 0.4f, 6.0f);
+            }
+        } else if (currentClass == CLASS_ROGUE) {
+            // Shadow Step Dash
+            Vector2 telePos = Vector2Add(playerPos, Vector2Scale(attackDirection, 140.0f));
+            for (int i = 0; i < 16; i++) {
+                particles.SpawnParticle(playerPos, { (float)GetRandomValue(-50, 50), (float)GetRandomValue(-50, 50) }, GREEN, 0.3f, 4.0f);
+            }
+            playerPos = telePos;
+            for (int i = 0; i < 16; i++) {
+                particles.SpawnParticle(playerPos, { (float)GetRandomValue(-50, 50), (float)GetRandomValue(-50, 50) }, LIME, 0.3f, 4.0f);
+            }
+        } else if (currentClass == CLASS_ELEMENTALIST) {
+            // Frost Nova Shockwave
+            for (int i = 0; i < 40; i++) {
+                float angle = (float)i * (2.0f * PI / 40.0f);
+                Vector2 dir = { cosf(angle), sinf(angle) };
+                particles.SpawnParticle(playerPos, Vector2Scale(dir, 220.0f), SKYBLUE, 0.5f, 5.0f);
+            }
+        }
+    }
+
+    void Update(float dt, Vector2 playerPos, ParticleEngine& particles) {
+        if (abilityCooldownTimer > 0.0f) {
+            abilityCooldownTimer -= dt;
+            if (abilityCooldownTimer < 0.0f) abilityCooldownTimer = 0.0f;
+        }
+
+        if (attackDurationTimer > 0.0f) {
+            attackDurationTimer -= dt;
+            if (attackDurationTimer <= 0.0f) {
+                activeHitbox.active = false;
+            }
+        }
+
+        if (comboTimer > 0.0f) {
+            comboTimer -= dt;
+            if (comboTimer <= 0.0f) {
+                currentComboStage = COMBO_IDLE; // Reset combo if player waits too long
+            }
+        }
+    }
+
+    void DrawAttackVisuals(Vector2 playerPos) {
+        if (!activeHitbox.active) return;
+
+        ClassProfile profile = GetCurrentProfile();
+        Color swingColor = profile.themeColor;
+
+        if (currentComboStage == COMBO_HIT_3_FINISHER) {
+            swingColor = GOLD; // High visibility finisher arc
+        }
+
+        DrawCircleLines((int)activeHitbox.center.x, (int)activeHitbox.center.y, activeHitbox.radius, swingColor);
+        DrawCircleV(activeHitbox.center, activeHitbox.radius * 0.4f, ColorAlpha(swingColor, 0.4f));
+    }
+
+    void DrawClassAndAbilityHUD(int screenW, int screenH) {
+        ClassProfile profile = GetCurrentProfile();
+
+        // Class Badge
+        DrawRectangle(20, 20, 220, 65, ColorAlpha(BLACK, 0.75f));
+        DrawRectangleLines(20, 20, 220, 65, profile.themeColor);
+        DrawText(TextFormat("Class: %s", profile.name.c_str()), 32, 28, 14, profile.themeColor);
+
+        // Combo Stage Indicator
+        const char* comboText = "Ready";
+        if (currentComboStage == COMBO_HIT_1) comboText = "Combo: Hit 1 [1.0x]";
+        else if (currentComboStage == COMBO_HIT_2) comboText = "Combo: Hit 2 [1.35x]";
+        else if (currentComboStage == COMBO_HIT_3_FINISHER) comboText = "FINISHER! [2.2x]";
+
+        DrawText(comboText, 32, 50, 11, (currentComboStage == COMBO_HIT_3_FINISHER) ? GOLD : WHITE);
+
+        // Active Ability Slot HUD
+        int uiX = 255;
+        int uiY = 20;
+        DrawRectangle(uiX, uiY, 180, 65, ColorAlpha(BLACK, 0.75f));
+        DrawRectangleLines(uiX, uiY, 180, 65, (abilityCooldownTimer <= 0.0f) ? profile.themeColor : DARKGRAY);
+
+        DrawText(TextFormat("[Y/Q] %s", profile.abilityName.c_str()), uiX + 10, uiY + 10, 12, (abilityCooldownTimer <= 0.0f) ? WHITE : GRAY);
+
+        if (abilityCooldownTimer > 0.0f) {
+            DrawText(TextFormat("CD: %.1fs", abilityCooldownTimer), uiX + 10, uiY + 35, 14, RED);
+            float progress = 1.0f - (abilityCooldownTimer / profile.abilityCooldown);
+            DrawRectangle(uiX + 10, uiY + 54, (int)(160.0f * progress), 4, profile.themeColor);
+        } else {
+            DrawText("READY", uiX + 10, uiY + 35, 14, GREEN);
+        }
+    }
+
+    void DrawClassSelectionMenu(int screenW, int screenH, Vector2 mousePos) {
+        if (!isClassSelectionOpen) return;
+
+        int uiW = 750, uiH = 400;
+        int uiX = (screenW - uiW) / 2;
+        int uiY = (screenH - uiH) / 2;
+
+        DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.7f));
+        DrawRectangle(uiX, uiY, uiW, uiH, GetColor(0x14141EFF));
+        DrawRectangleLines(uiX, uiY, uiW, uiH, GOLD);
+
+        DrawText("SELECT CHARACTER CLASS", uiX + (uiW - MeasureText("SELECT CHARACTER CLASS", 20)) / 2, uiY + 20, 20, GOLD);
+
+        int cardW = 220, cardH = 300;
+        int startX = uiX + 25;
+
+        for (size_t i = 0; i < classProfiles.size(); i++) {
+            const auto& prof = classProfiles[i];
+            Rectangle cardBounds = { (float)startX + i * 235, (float)uiY + 65, (float)cardW, (float)cardH };
+
+            bool isSelected = (currentClass == prof.type);
+            bool isHovered = CheckCollisionPointRec(mousePos, cardBounds);
+
+            DrawRectangleRec(cardBounds, isHovered ? GetColor(0x222232FF) : GetColor(0x1A1A26FF));
+            DrawRectangleLinesEx(cardBounds, isSelected ? 2.0f : 1.0f, isSelected ? prof.themeColor : (isHovered ? WHITE : DARKGRAY));
+
+            DrawText(prof.name.c_str(), (int)cardBounds.x + 15, (int)cardBounds.y + 15, 18, prof.themeColor);
+            DrawText(TextFormat("HP: %.0f", prof.maxHealth), (int)cardBounds.x + 15, (int)cardBounds.y + 45, 11, GREEN);
+            DrawText(TextFormat("Speed: %.0f", prof.moveSpeed), (int)cardBounds.x + 15, (int)cardBounds.y + 62, 11, SKYBLUE);
+            DrawText(TextFormat("Damage: %.0f", prof.baseDamage), (int)cardBounds.x + 15, (int)cardBounds.y + 79, 11, ORANGE);
+            DrawText(TextFormat("Crit: %.0f%%", prof.critChance * 100.0f), (int)cardBounds.x + 15, (int)cardBounds.y + 96, 11, YELLOW);
+
+            DrawRectangle((int)cardBounds.x + 10, (int)cardBounds.y + 120, cardW - 20, 1, DARKGRAY);
+
+            DrawText("Ability:", (int)cardBounds.x + 15, (int)cardBounds.y + 130, 11, GRAY);
+            DrawText(prof.abilityName.c_str(), (int)cardBounds.x + 15, (int)cardBounds.y + 145, 12, prof.themeColor);
+
+            if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                currentClass = prof.type;
+                isClassSelectionOpen = false;
+            }
+        }
+
+        DrawText("[ESC] Close Class Menu", uiX + (uiW - MeasureText("[ESC] Close Class Menu", 11)) / 2, uiY + uiH - 25, 11, LIGHTGRAY);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Classes & 3-Hit Weapon Combo Chains");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+    
+    std::vector<Vector2> floorTiles;
+    for (int r = 0; r < DUNGEON_ROWS; r++) {
+        for (int c = 0; c < DUNGEON_COLS; c++) {
+            if (dungeon.grid[r][c] == TILE_FLOOR) {
+                floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+            }
+        }
+    }
+    biomeMgr.PopulateDungeonFeatures(floorTiles, BIOME_LAVA_CAVERNS);
+    player.pos = { 350.0f, 300.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+
+        // Toggle Class Selection Menu (Key C)
+        if (IsKeyPressed(KEY_C)) {
+            classMgr.isClassSelectionOpen = !classMgr.isClassSelectionOpen;
+        }
+
+        // Apply Class Modifiers to Player Base Stats
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        // Trigger Attacks & Abilities via Input
+        if (!classMgr.isClassSelectionOpen && !metaMgr.isUIOpen && !talentTree.isOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen || classMgr.isClassSelectionOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    biomeMgr.DrawTrapsAndShrines();
+                    combatMgr.DrawTelegraphs();
+                    boss.Draw();
+                }
+
+                classMgr.DrawAttackVisuals(player.pos); // Draw Combo Attack Arcs & Hitboxes
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+        classMgr.DrawClassSelectionMenu(screenW, screenH, mousePos);
+
+        DrawText("[C] Switch Class  |  F5: Save  |  F9: Load", screenW - 310, 15, 11, RAYWHITE);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
