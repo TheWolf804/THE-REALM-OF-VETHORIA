@@ -1,0 +1,483 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "ParticleEngine.h"
+#include <vector>
+#include <string>
+
+enum EliteAffix {
+    AFFIX_NONE = 0,
+    AFFIX_VAMPIRIC,
+    AFFIX_MORTAR,
+    AFFIX_SHIELDING
+};
+
+struct MortarShell {
+    Vector2 startPos;
+    Vector2 targetPos;
+    Vector2 currentPos;
+    float arcHeight;
+    float progress;  // 0.0 to 1.0
+    float speed;
+    bool exploded;
+};
+
+struct EliteEnemy {
+    int id;
+    Vector2 pos;
+    Vector2 velocity;
+    float hp;
+    float maxHp;
+    float radius;
+    EliteAffix affix;
+    bool isMiniboss;
+    
+    // Shielding Affix State
+    float shieldAngle; // Direction shield faces
+    
+    // Mortar Cooldown
+    float mortarCooldown;
+};
+
+struct MinibossRoom {
+    Rectangle bounds;
+    Vector2 center;
+    bool playerInside;
+    bool locked;
+    bool cleared;
+};
+
+class EliteAndMinibossManager {
+public:
+    std::vector<EliteEnemy> elites;
+    std::vector<MortarShell> mortarShells;
+    MinibossRoom minibossRoom;
+
+    void GenerateMinibossRoom(int tileCols, int tileRows, int tileSize) {
+        // Place Miniboss Arena near bottom-right quadrant
+        float roomW = 10.0f * tileSize;
+        float roomH = 10.0f * tileSize;
+        float startX = (tileCols - 14) * tileSize;
+        float startY = (tileRows - 14) * tileSize;
+
+        minibossRoom.bounds = { startX, startY, roomW, roomH };
+        minibossRoom.center = { startX + roomW / 2.0f, startY + roomH / 2.0f };
+        minibossRoom.playerInside = false;
+        minibossRoom.locked = false;
+        minibossRoom.cleared = false;
+
+        // Spawn Miniboss in Arena Center
+        EliteEnemy miniboss;
+        miniboss.id = 999;
+        miniboss.pos = minibossRoom.center;
+        miniboss.hp = 500.0f;
+        miniboss.maxHp = 500.0f;
+        miniboss.radius = 28.0f;
+        miniboss.affix = AFFIX_MORTAR;
+        miniboss.isMiniboss = true;
+        miniboss.mortarCooldown = 2.0f;
+        miniboss.shieldAngle = 0.0f;
+
+        elites.clear();
+        elites.push_back(miniboss);
+    }
+
+    void SpawnElite(Vector2 pos, EliteAffix affix) {
+        EliteEnemy e;
+        e.id = GetRandomValue(1000, 9999);
+        e.pos = pos;
+        e.hp = 180.0f;
+        e.maxHp = 180.0f;
+        e.radius = 18.0f;
+        e.affix = affix;
+        e.isMiniboss = false;
+        e.mortarCooldown = 3.0f;
+        e.shieldAngle = 0.0f;
+        elites.push_back(e);
+    }
+
+    void Update(float dt, Vector2& playerPos, float& playerHp, ParticleEngine& particles) {
+        // Check Miniboss Room Lock-in
+        if (!minibossRoom.cleared) {
+            bool insideNow = CheckCollisionPointRec(playerPos, minibossRoom.bounds);
+            if (insideNow && !minibossRoom.playerInside) {
+                minibossRoom.playerInside = true;
+                minibossRoom.locked = true; // Lock doors on entry
+            }
+
+            // Lockout logic: restrict movement to bounds
+            if (minibossRoom.locked) {
+                if (playerPos.x < minibossRoom.bounds.x + 16) playerPos.x = minibossRoom.bounds.x + 16;
+                if (playerPos.x > minibossRoom.bounds.x + minibossRoom.bounds.width - 16) playerPos.x = minibossRoom.bounds.x + minibossRoom.bounds.width - 16;
+                if (playerPos.y < minibossRoom.bounds.y + 16) playerPos.y = minibossRoom.bounds.y + 16;
+                if (playerPos.y > minibossRoom.bounds.y + minibossRoom.bounds.height - 16) playerPos.y = minibossRoom.bounds.y + minibossRoom.bounds.height - 16;
+            }
+        }
+
+        // Update Elites & Affixes
+        for (auto it = elites.begin(); it != elites.end();) {
+            // Face player
+            Vector2 toPlayer = Vector2Subtract(playerPos, it->pos);
+            if (Vector2Length(toPlayer) > 0.1f) {
+                it->shieldAngle = atan2f(toPlayer.y, toPlayer.x);
+                
+                // Move towards player slowly
+                Vector2 moveDir = Vector2Normalize(toPlayer);
+                it->pos = Vector2Add(it->pos, Vector2Scale(moveDir, (it->isMiniboss ? 60.0f : 80.0f) * dt));
+            }
+
+            // AFFIX: Vampiric Aura Particles
+            if (it->affix == AFFIX_VAMPIRIC) {
+                particles.SpawnParticle(it->pos, { (float)GetRandomValue(-20, 20), (float)GetRandomValue(-20, 20) }, MAROON, 0.3f, 3.0f);
+            }
+
+            // AFFIX: Mortar Launch Logic
+            if (it->affix == AFFIX_MORTAR) {
+                it->mortarCooldown -= dt;
+                if (it->mortarCooldown <= 0.0f) {
+                    it->mortarCooldown = it->isMiniboss ? 2.5f : 4.5f;
+
+                    // Fire Mortar Shell at Player
+                    MortarShell shell;
+                    shell.startPos = it->pos;
+                    shell.targetPos = playerPos;
+                    shell.currentPos = it->pos;
+                    shell.arcHeight = 120.0f;
+                    shell.progress = 0.0f;
+                    shell.speed = 1.2f;
+                    shell.exploded = false;
+                    mortarShells.push_back(shell);
+                }
+            }
+
+            // Check if Miniboss Defeated
+            if (it->hp <= 0.0f) {
+                if (it->isMiniboss) {
+                    minibossRoom.locked = false;
+                    minibossRoom.cleared = true;
+                }
+                it = elites.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        // Update Mortar Projectiles
+        for (auto it = mortarShells.begin(); it != mortarShells.end();) {
+            it->progress += it->speed * dt;
+            if (it->progress >= 1.0f) {
+                it->progress = 1.0f;
+                it->exploded = true;
+
+                // Explosion Impact AOE
+                if (Vector2Distance(it->targetPos, playerPos) < 45.0f) {
+                    playerHp -= 25.0f; // Mortar impact damage
+                }
+
+                // Explosive Particles
+                for (int i = 0; i < 24; i++) {
+                    float angle = (float)i * (2.0f * PI / 24.0f);
+                    Vector2 dir = { cosf(angle), sinf(angle) };
+                    particles.SpawnParticle(it->targetPos, Vector2Scale(dir, 160.0f), ORANGE, 0.4f, 5.0f);
+                }
+
+                it = mortarShells.erase(it);
+            } else {
+                // Parabolic Arc Trajectory Interpolation
+                Vector2 linear = Vector2Lerp(it->startPos, it->targetPos, it->progress);
+                float arc = sinf(it->progress * PI) * it->arcHeight;
+                it->currentPos = { linear.x, linear.y - arc };
+                ++it;
+            }
+        }
+    }
+
+    void ApplyDamageToElites(Vector2 hitCenter, float hitRadius, float damage, float knockback, Vector2 attackOrigin, float& playerHp, ParticleEngine& particles) {
+        for (auto& e : elites) {
+            if (CheckCollisionCircles(hitCenter, hitRadius, e.pos, e.radius)) {
+                
+                // AFFIX: Shielding Direction Check
+                if (e.affix == AFFIX_SHIELDING) {
+                    Vector2 attackDir = Vector2Normalize(Vector2Subtract(e.pos, attackOrigin));
+                    Vector2 shieldDir = { cosf(e.shieldAngle), sinf(e.shieldAngle) };
+
+                    // Dot product check: if hit comes from frontal 120-degree cone, block it!
+                    if (Vector2DotProduct(attackDir, shieldDir) < -0.3f) {
+                        // Shield Block Sparks
+                        for (int i = 0; i < 8; i++) {
+                            particles.SpawnParticle(e.pos, { (float)GetRandomValue(-100, 100), (float)GetRandomValue(-100, 100) }, SKYBLUE, 0.2f, 3.0f);
+                        }
+                        continue; // Damage negated by Shield!
+                    }
+                }
+
+                // Apply Damage
+                e.hp -= damage;
+
+                // AFFIX: Vampiric Lifesteal on Player Hit
+                if (e.affix == AFFIX_VAMPIRIC && e.hp < e.maxHp) {
+                    e.hp = std::min(e.maxHp, e.hp + damage * 0.3f); // Heel 30% of damage
+                }
+
+                // Apply Knockback
+                Vector2 kbDir = Vector2Normalize(Vector2Subtract(e.pos, attackOrigin));
+                e.pos = Vector2Add(e.pos, Vector2Scale(kbDir, knockback * 0.05f));
+
+                // Hit FX
+                for (int i = 0; i < 6; i++) {
+                    particles.SpawnParticle(e.pos, { (float)GetRandomValue(-80, 80), (float)GetRandomValue(-80, 80) }, RED, 0.25f, 3.0f);
+                }
+            }
+        }
+    }
+
+    void DrawInWorldSpace() {
+        // Draw Miniboss Arena Gate & Bounds
+        if (!minibossRoom.cleared) {
+            DrawRectangleLinesEx(minibossRoom.bounds, minibossRoom.locked ? 3.0f : 1.0f, minibossRoom.locked ? RED : GOLD);
+            if (minibossRoom.locked) {
+                DrawRectangleRec(minibossRoom.bounds, ColorAlpha(RED, 0.08f));
+                DrawText("MINIBOSS ARENA LOCKED", (int)minibossRoom.bounds.x + 20, (int)minibossRoom.bounds.y + 20, 16, RED);
+            } else {
+                DrawText("MINIBOSS CHAMBER", (int)minibossRoom.bounds.x + 20, (int)minibossRoom.bounds.y + 20, 14, GOLD);
+            }
+        }
+
+        // Draw Mortar Targets & Flying Shells
+        for (const auto& ms : mortarShells) {
+            DrawCircleLines((int)ms.targetPos.x, (int)ms.targetPos.y, 40.0f, RedAlpha(0.6f));
+            DrawCircleV(ms.targetPos, 40.0f * ms.progress, RedAlpha(0.25f));
+            DrawCircleV(ms.currentPos, 6.0f, ORANGE); // Flying projectile
+        }
+
+        // Draw Elites & Affix Visuals
+        for (const auto& e : elites) {
+            Color bodyColor = e.isMiniboss ? PURPLE : VIOLET;
+            DrawCircleV(e.pos, e.radius, bodyColor);
+            DrawCircleLines((int)e.pos.x, (int)e.pos.y, e.radius + 2.0f, GOLD);
+
+            // Draw Health Bar
+            float hpRatio = e.hp / e.maxHp;
+            DrawRectangle((int)e.pos.x - 20, (int)e.pos.y - (int)e.radius - 12, 40, 5, BLACK);
+            DrawRectangle((int)e.pos.x - 20, (int)e.pos.y - (int)e.radius - 12, (int)(40.0f * hpRatio), 5, GREEN);
+
+            // AFFIX VISUAL: Shielding Barrier Arc
+            if (e.affix == AFFIX_SHIELDING) {
+                Vector2 shieldCenter = Vector2Add(e.pos, { cosf(e.shieldAngle) * (e.radius + 8.0f), sinf(e.shieldAngle) * (e.radius + 8.0f) });
+                DrawCircleV(shieldCenter, 10.0f, ColorAlpha(SKYBLUE, 0.7f));
+            }
+
+            // Affix Name Tag
+            const char* affixTag = e.isMiniboss ? "MINIBOSS" : "ELITE";
+            if (e.affix == AFFIX_VAMPIRIC) affixTag = "VAMPIRIC";
+            else if (e.affix == AFFIX_MORTAR) affixTag = "MORTAR";
+            else if (e.affix == AFFIX_SHIELDING) affixTag = "SHIELDED";
+
+            DrawText(affixTag, (int)e.pos.x - MeasureText(affixTag, 9) / 2, (int)e.pos.y - (int)e.radius - 23, 9, GOLD);
+        }
+    }
+
+private:
+    Color RedAlpha(float alpha) { return ColorAlpha(RED, alpha); }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Elite Affixes & Procedural Miniboss Arenas");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+    eliteMgr.GenerateMinibossRoom(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+    // Spawn random Elites in dungeon floor tiles
+    std::vector<Vector2> floorTiles;
+    for (int r = 0; r < DUNGEON_ROWS; r++) {
+        for (int c = 0; c < DUNGEON_COLS; c++) {
+            if (dungeon.grid[r][c] == TILE_FLOOR) {
+                floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+            }
+        }
+    }
+    biomeMgr.PopulateDungeonFeatures(floorTiles, BIOME_LAVA_CAVERNS);
+    
+    eliteMgr.SpawnElite(floorTiles[10], AFFIX_VAMPIRIC);
+    eliteMgr.SpawnElite(floorTiles[25], AFFIX_SHIELDING);
+    eliteMgr.SpawnElite(floorTiles[40], AFFIX_MORTAR);
+
+    player.pos = { 350.0f, 300.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+
+        if (IsKeyPressed(KEY_C)) {
+            classMgr.isClassSelectionOpen = !classMgr.isClassSelectionOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (!classMgr.isClassSelectionOpen && !metaMgr.isUIOpen && !talentTree.isOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+
+                // Apply Hit to Elites
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    eliteMgr.ApplyDamageToElites(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, totalDmg, classMgr.activeHitbox.knockbackForce, player.pos, player.health, particles);
+                }
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen || classMgr.isClassSelectionOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                eliteMgr.Update(dt, player.pos, player.health, particles);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    biomeMgr.DrawTrapsAndShrines();
+                    eliteMgr.DrawInWorldSpace();
+                    combatMgr.DrawTelegraphs();
+                    boss.Draw();
+                }
+
+                classMgr.DrawAttackVisuals(player.pos);
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+        classMgr.DrawClassSelectionMenu(screenW, screenH, mousePos);
+
+        DrawText("[C] Switch Class  |  F5: Save  |  F9: Load", screenW - 310, 15, 11, RAYWHITE);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
