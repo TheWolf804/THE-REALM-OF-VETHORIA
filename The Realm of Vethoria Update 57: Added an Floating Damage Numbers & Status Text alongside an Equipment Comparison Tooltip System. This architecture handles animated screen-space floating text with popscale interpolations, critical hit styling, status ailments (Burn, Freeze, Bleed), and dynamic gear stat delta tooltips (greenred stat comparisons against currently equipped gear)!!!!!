@@ -1,0 +1,397 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+enum DamageType {
+    DAMAGE_NORMAL = 0,
+    DAMAGE_CRIT,
+    STATUS_BURN,
+    STATUS_FREEZE,
+    STATUS_BLEED,
+    HEAL_PLAYER
+};
+
+struct FloatingNumber {
+    Vector2 worldPos;
+    std::string text;
+    Color color;
+    DamageType type;
+    float timer;
+    float maxLifetime;
+    float scale;
+    Vector2 velocity;
+};
+
+struct EquipmentItem {
+    std::string name;
+    int slotType; // 0: Weapon, 1: Armor, 2: Accessory
+    int rarity;   // 0: Common, 1: Rare, 2: Legendary
+    int atkBonus;
+    int defBonus;
+    int hpBonus;
+    float critBonus;
+    std::string perkDescription;
+};
+
+class CombatUIAndTooltipManager {
+public:
+    std::vector<FloatingNumber> activeTexts;
+
+    void SpawnDamageText(Vector2 worldPos, float amount, DamageType type) {
+        FloatingNumber fn;
+        fn.worldPos = worldPos;
+        fn.type = type;
+        fn.timer = 0.8f;
+        fn.maxLifetime = 0.8f;
+        fn.velocity = { (float)GetRandomValue(-20, 20), -60.0f };
+
+        if (type == DAMAGE_CRIT) {
+            fn.text = TextFormat("%.0f!", amount);
+            fn.color = GOLD;
+            fn.scale = 1.8f;
+            fn.timer = 1.0f;
+            fn.maxLifetime = 1.0f;
+        } else if (type == HEAL_PLAYER) {
+            fn.text = TextFormat("+%.0f", amount);
+            fn.color = LIME;
+            fn.scale = 1.2f;
+        } else if (type == STATUS_BURN) {
+            fn.text = "BURN!";
+            fn.color = ORANGE;
+            fn.scale = 1.3f;
+        } else if (type == STATUS_FREEZE) {
+            fn.text = "FROZEN!";
+            fn.color = SKYBLUE;
+            fn.scale = 1.3f;
+        } else if (type == STATUS_BLEED) {
+            fn.text = "BLEED!";
+            fn.color = MAROON;
+            fn.scale = 1.3f;
+        } else {
+            fn.text = TextFormat("%.0f", amount);
+            fn.color = RAYWHITE;
+            fn.scale = 1.0f;
+        }
+
+        activeTexts.push_back(fn);
+    }
+
+    void Update(float dt) {
+        for (auto it = activeTexts.begin(); it != activeTexts.end();) {
+            it->timer -= dt;
+            it->worldPos.x += it->velocity.x * dt;
+            it->worldPos.y += it->velocity.y * dt;
+
+            // Pop animation easing
+            float progress = 1.0f - (it->timer / it->maxLifetime);
+            if (progress < 0.2f) {
+                it->scale = Lerp(1.8f, 1.0f, progress / 0.2f);
+            }
+
+            if (it->timer <= 0.0f) {
+                it = activeTexts.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void DrawFloatingTexts(Camera2D camera) {
+        for (const auto& fn : activeTexts) {
+            Vector2 screenPos = GetWorldToScreen2D(fn.worldPos, camera);
+            float alpha = fn.timer / fn.maxLifetime;
+
+            Color drawColor = ColorAlpha(fn.color, alpha);
+            int fontSize = (int)(16.0f * fn.scale);
+
+            // Text Outline for readability
+            DrawText(fn.text.c_str(), (int)screenPos.x + 1, (int)screenPos.y + 1, fontSize, ColorAlpha(BLACK, alpha));
+            DrawText(fn.text.c_str(), (int)screenPos.x, (int)screenPos.y, fontSize, drawColor);
+        }
+    }
+
+    void DrawEquipmentComparisonTooltip(Vector2 mousePos, const EquipmentItem& hovered, const EquipmentItem& equipped) {
+        int cardW = 230, cardH = 210;
+        int tooltipX = (int)mousePos.x + 15;
+        int tooltipY = (int)mousePos.y + 15;
+
+        // Keep tooltip on screen
+        if (tooltipX + cardW * 2 + 10 > GetScreenWidth()) tooltipX = (int)mousePos.x - cardW * 2 - 15;
+        if (tooltipY + cardH > GetScreenHeight()) tooltipY = GetScreenHeight() - cardH - 10;
+
+        // Render Currently Equipped Item Card
+        DrawItemCard(tooltipX, tooltipY, cardW, cardH, equipped, "EQUIPPED", true);
+
+        // Render Hovered Item Comparison Card
+        DrawItemCard(tooltipX + cardW + 10, tooltipY, cardW, cardH, hovered, "NEW ITEM", false, &equipped);
+    }
+
+private:
+    void DrawItemCard(int x, int y, int w, int h, const EquipmentItem& item, const char* header, bool isEquipped, const EquipmentItem* compareAgainst = nullptr) {
+        Color borderCol = (item.rarity == 2) ? GOLD : ((item.rarity == 1) ? PURPLE : LIGHTGRAY);
+
+        DrawRectangle(x, y, w, h, ColorAlpha(GetColor(0x12121CFF), 0.95f));
+        DrawRectangleLines(x, y, w, h, borderCol);
+
+        DrawRectangle(x, y, w, 24, ColorAlpha(borderCol, 0.2f));
+        DrawText(header, x + 10, y + 6, 11, borderCol);
+
+        DrawText(item.name.c_str(), x + 10, y + 30, 14, WHITE);
+
+        int curY = y + 55;
+
+        // ATK Comparison
+        DrawStatRow(x + 10, curY, "ATK", item.atkBonus, compareAgainst ? compareAgainst->atkBonus : 0, compareAgainst != nullptr);
+        curY += 22;
+
+        // DEF Comparison
+        DrawStatRow(x + 10, curY, "DEF", item.defBonus, compareAgainst ? compareAgainst->defBonus : 0, compareAgainst != nullptr);
+        curY += 22;
+
+        // HP Comparison
+        DrawStatRow(x + 10, curY, "HP", item.hpBonus, compareAgainst ? compareAgainst->hpBonus : 0, compareAgainst != nullptr);
+        curY += 22;
+
+        // Perk Description
+        DrawRectangle(x + 10, curY + 5, w - 20, 1, DARKGRAY);
+        DrawText(item.perkDescription.c_str(), x + 10, curY + 15, 10, GRAY);
+    }
+
+    void DrawStatRow(int x, int y, const char* label, int val, int compareVal, bool showDelta) {
+        DrawText(TextFormat("%s: +%d", label, val), x, y, 12, RAYWHITE);
+
+        if (showDelta) {
+            int delta = val - compareVal;
+            if (delta != 0) {
+                const char* deltaStr = TextFormat("(%s%d)", (delta > 0) ? "+" : "", delta);
+                Color deltaCol = (delta > 0) ? GREEN : RED;
+                DrawText(deltaStr, x + 90, y, 12, deltaCol);
+            }
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Floating Numbers & Equipment Comparison");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    dungeon.Generate();
+    minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+    eliteMgr.GenerateMinibossRoom(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+    std::vector<Vector2> floorTiles;
+    for (int r = 0; r < DUNGEON_ROWS; r++) {
+        for (int c = 0; c < DUNGEON_COLS; c++) {
+            if (dungeon.grid[r][c] == TILE_FLOOR) {
+                floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+            }
+        }
+    }
+    biomeMgr.PopulateDungeonFeatures(floorTiles, BIOME_LAVA_CAVERNS);
+    eliteMgr.SpawnElite(floorTiles[10], AFFIX_VAMPIRIC);
+
+    player.pos = { 350.0f, 300.0f };
+
+    // Mock Gear Items for Comparison Tooltip
+    EquipmentItem equippedWeapon = { "Iron Broadsword", 0, 0, 15, 0, 10, 0.05f, "Standard sturdy iron blade." };
+    EquipmentItem hoverWeapon = { "Sunfire Greatsword", 0, 2, 38, 0, 25, 0.15f, "Deals extra fire damage on finishers." };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+
+        if (IsKeyPressed(KEY_C)) {
+            classMgr.isClassSelectionOpen = !classMgr.isClassSelectionOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (!classMgr.isClassSelectionOpen && !metaMgr.isUIOpen && !talentTree.isOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                    if (isCrit) totalDmg *= 1.75f;
+
+                    // Spawn Floating Damage Text on Hit
+                    Vector2 hitPos = classMgr.activeHitbox.center;
+                    combatUIMgr.SpawnDamageText(hitPos, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+
+                    if (classMgr.currentComboStage == COMBO_HIT_3_FINISHER) {
+                        combatUIMgr.SpawnDamageText(Vector2Add(hitPos, { 0, -20 }), 0, STATUS_BURN);
+                    }
+
+                    eliteMgr.ApplyDamageToElites(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, totalDmg, classMgr.activeHitbox.knockbackForce, player.pos, player.health, particles);
+                }
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+                combatUIMgr.SpawnDamageText(player.pos, 0, STATUS_FREEZE);
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen || classMgr.isClassSelectionOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                eliteMgr.Update(dt, player.pos, player.health, particles);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    biomeMgr.DrawTrapsAndShrines();
+                    eliteMgr.DrawInWorldSpace();
+                    combatMgr.DrawTelegraphs();
+                    boss.Draw();
+                }
+
+                classMgr.DrawAttackVisuals(player.pos);
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                // Render Floating Combat Text in World-to-Screen Space
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+        classMgr.DrawClassSelectionMenu(screenW, screenH, mousePos);
+
+        // Draw Comparison Tooltip Demonstration on Hovering HUD Region
+        if (gearMgr.isInventoryOpen) {
+            combatUIMgr.DrawEquipmentComparisonTooltip(mousePos, hoverWeapon, equippedWeapon);
+        }
+
+        DrawText("[C] Switch Class  |  [I] Open Inventory Tooltips  |  F5: Save", screenW - 420, 15, 11, RAYWHITE);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
