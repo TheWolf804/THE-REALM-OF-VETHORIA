@@ -1,0 +1,405 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "ParticleEngine.h"
+#include <cmath>
+#include <string>
+
+enum TransitionType {
+    TRANSITION_NONE = 0,
+    TRANSITION_STAIRS_DOWN,
+    TRANSITION_ELEVATOR
+};
+
+struct FloorPortal {
+    Vector2 pos;
+    TransitionType type;
+    float radius = 28.0f;
+    bool active = true;
+    float animTimer = 0.0f;
+};
+
+struct ElevatorPlatform {
+    Vector2 pos;
+    float width = 64.0f;
+    float height = 64.0f;
+    bool isMoving = false;
+    float moveTimer = 0.0f;
+    float duration = 1.5f;
+    int targetFloor = 1;
+};
+
+class MultiFloorManager {
+public:
+    int currentFloor = 1;
+    int maxFloorReached = 1;
+
+    // Floor Scaling Curves
+    float GetEnemyHealthMultiplier() const {
+        return powf(1.25f, (float)(currentFloor - 1));
+    }
+
+    float GetEnemyDamageMultiplier() const {
+        return powf(1.18f, (float)(currentFloor - 1));
+    }
+
+    float GetLootQualityMultiplier() const {
+        return 1.0f + (currentFloor - 1) * 0.35f;
+    }
+
+    FloorPortal staircaseDown;
+    ElevatorPlatform elevator;
+
+    // Transition State
+    bool isTransitioning = false;
+    float transitionAlpha = 0.0f;
+    TransitionType pendingTransition = TRANSITION_NONE;
+
+    void SpawnFloorExits(Vector2 stairPos, Vector2 elevatorPos, int targetElevatorFloor) {
+        staircaseDown.pos = stairPos;
+        staircaseDown.type = TRANSITION_STAIRS_DOWN;
+        staircaseDown.active = true;
+
+        elevator.pos = elevatorPos;
+        elevator.targetFloor = targetElevatorFloor;
+        elevator.isMoving = false;
+        elevator.moveTimer = 0.0f;
+    }
+
+    void Update(float dt, Vector2 playerPos, bool& outShouldRegenerate) {
+        outShouldRegenerate = false;
+        staircaseDown.animTimer += dt * 2.0f;
+
+        // 1. Handle Active Transition Screen Fade
+        if (isTransitioning) {
+            transitionAlpha += dt * 2.0f;
+            if (transitionAlpha >= 1.0f) {
+                transitionAlpha = 1.0f;
+                
+                // Execute Floor Change
+                if (pendingTransition == TRANSITION_STAIRS_DOWN) {
+                    currentFloor++;
+                } else if (pendingTransition == TRANSITION_ELEVATOR) {
+                    currentFloor = elevator.targetFloor;
+                }
+
+                if (currentFloor > maxFloorReached) maxFloorReached = currentFloor;
+
+                outShouldRegenerate = true;
+                pendingTransition = TRANSITION_NONE;
+            }
+            return;
+        }
+
+        // Fade Out after generation
+        if (transitionAlpha > 0.0f && !isTransitioning) {
+            transitionAlpha -= dt * 2.0f;
+            if (transitionAlpha < 0.0f) transitionAlpha = 0.0f;
+        }
+
+        // 2. Staircase Interaction Check
+        if (staircaseDown.active && CheckCollisionCircles(playerPos, 16.0f, staircaseDown.pos, staircaseDown.radius)) {
+            if (IsKeyPressed(KEY_E)) {
+                isTransitioning = true;
+                pendingTransition = TRANSITION_STAIRS_DOWN;
+            }
+        }
+
+        // 3. Elevator Platform Trigger Check
+        Rectangle elevRect = { elevator.pos.x - elevator.width / 2.0f, elevator.pos.y - elevator.height / 2.0f, elevator.width, elevator.height };
+        if (CheckCollisionPointRec(playerPos, elevRect)) {
+            if (IsKeyPressed(KEY_E) && !elevator.isMoving) {
+                elevator.isMoving = true;
+                isTransitioning = true;
+                pendingTransition = TRANSITION_ELEVATOR;
+            }
+        }
+    }
+
+    void DrawWorldSpace() {
+        // Render Staircase Down
+        if (staircaseDown.active) {
+            float pulse = sinf(staircaseDown.animTimer) * 3.0f;
+
+            DrawCircleV(staircaseDown.pos, staircaseDown.radius + pulse, ColorAlpha(DARKBLUE, 0.4f));
+            DrawCircleLines((int)staircaseDown.pos.x, (int)staircaseDown.pos.y, staircaseDown.radius, SKYBLUE);
+
+            // Draw Staircase steps icon inside circle
+            for (int i = 0; i < 4; i++) {
+                int stepY = (int)staircaseDown.pos.y - 12 + i * 7;
+                int stepW = 24 - i * 5;
+                DrawRectangle((int)staircaseDown.pos.x - stepW / 2, stepY, stepW, 4, LIGHTGRAY);
+            }
+
+            DrawRectangle((int)staircaseDown.pos.x - 45, (int)staircaseDown.pos.y - 42, 90, 16, ColorAlpha(BLACK, 0.8f));
+            DrawText("[E] Descend", (int)staircaseDown.pos.x - MeasureText("[E] Descend", 10) / 2, (int)staircaseDown.pos.y - 39, 10, SKYBLUE);
+        }
+
+        // Render Elevator Platform
+        Rectangle elevRect = { elevator.pos.x - elevator.width / 2.0f, elevator.pos.y - elevator.height / 2.0f, elevator.width, elevator.height };
+        DrawRectangleRec(elevRect, GetColor(0x1F1F2BFF));
+        DrawRectangleLinesEx(elevRect, 2.0f, GOLD);
+
+        // Platform Gear Graphics
+        DrawCircleV(elevator.pos, 16.0f, ColorAlpha(GOLD, 0.3f));
+        DrawCircleLines((int)elevator.pos.x, (int)elevator.pos.y, 16.0f, GOLD);
+
+        DrawRectangle((int)elevator.pos.x - 55, (int)elevator.pos.y - 48, 110, 16, ColorAlpha(BLACK, 0.8f));
+        DrawText(TextFormat("[E] Elevator (F%d)", elevator.targetFloor), (int)elevator.pos.x - MeasureText(TextFormat("[E] Elevator (F%d)", elevator.targetFloor), 10) / 2, (int)elevator.pos.y - 45, 10, GOLD);
+    }
+
+    void DrawFloorHUD(int screenW) {
+        // Top Center Floor Banner
+        int w = 220, h = 32;
+        int x = (screenW - w) / 2;
+        int y = 15;
+
+        DrawRectangle(x, y, w, h, ColorAlpha(BLACK, 0.8f));
+        DrawRectangleLines(x, y, w, h, GOLD);
+
+        const char* floorText = TextFormat("DUNGEON DEPTH: FLOOR %d", currentFloor);
+        DrawText(floorText, x + (w - MeasureText(floorText, 12)) / 2, y + 6, 12, GOLD);
+
+        const char* multText = TextFormat("Enemy HP x%.2f | Dmg x%.2f", GetEnemyHealthMultiplier(), GetEnemyDamageMultiplier());
+        DrawText(multText, x + (w - MeasureText(multText, 9)) / 2, y + 20, 9, GRAY);
+    }
+
+    void DrawTransitionOverlay(int screenW, int screenH) {
+        if (transitionAlpha > 0.0f) {
+            DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, transitionAlpha));
+
+            if (isTransitioning) {
+                const char* descText = (pendingTransition == TRANSITION_ELEVATOR) ? "TAKING ELEVATOR..." : "DESCENDING STAIRCASE...";
+                DrawText(descText, (screenW - MeasureText(descText, 18)) / 2, screenH / 2 - 10, 18, GOLD);
+            }
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Multi-Floor Progression & Elevators");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    auto GenerateFloorContent = [&]() {
+        dungeon.Generate();
+        minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+        eliteMgr.GenerateMinibossRoom(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+        std::vector<Vector2> floorTiles;
+        for (int r = 0; r < DUNGEON_ROWS; r++) {
+            for (int c = 0; c < DUNGEON_COLS; c++) {
+                if (dungeon.grid[r][c] == TILE_FLOOR) {
+                    floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+                }
+            }
+        }
+
+        BiomeType bType = (floorMgr.currentFloor % 2 == 0) ? BIOME_ICE_VAULTS : BIOME_LAVA_CAVERNS;
+        biomeMgr.PopulateDungeonFeatures(floorTiles, bType);
+
+        if (floorTiles.size() > 50) {
+            floorMgr.SpawnFloorExits(floorTiles[15], floorTiles[45], floorMgr.currentFloor + 3);
+            player.pos = floorTiles[0];
+        }
+    };
+
+    GenerateFloorContent();
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+
+        if (IsKeyPressed(KEY_C)) {
+            classMgr.isClassSelectionOpen = !classMgr.isClassSelectionOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (!classMgr.isClassSelectionOpen && !metaMgr.isUIOpen && !talentTree.isOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                    if (isCrit) totalDmg *= 1.75f;
+
+                    combatUIMgr.SpawnDamageText(classMgr.activeHitbox.center, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+                    eliteMgr.ApplyDamageToElites(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, totalDmg, classMgr.activeHitbox.knockbackForce, player.pos, player.health, particles);
+                }
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        // Update Multi-Floor Progress & Elevator Transitions
+        bool shouldRegenFloor = false;
+        if (portals.currentScene == SCENE_DUNGEON) {
+            floorMgr.Update(dt, player.pos, shouldRegenFloor);
+            if (shouldRegenFloor) {
+                GenerateFloorContent();
+                floorMgr.isTransitioning = false;
+            }
+        }
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen || classMgr.isClassSelectionOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen && !floorMgr.isTransitioning) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                eliteMgr.Update(dt, player.pos, player.health, particles);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    floorMgr.DrawWorldSpace(); // Draw Staircase and Elevator Platform
+                    biomeMgr.DrawTrapsAndShrines();
+                    eliteMgr.DrawInWorldSpace();
+                    combatMgr.DrawTelegraphs();
+                    boss.Draw();
+                }
+
+                classMgr.DrawAttackVisuals(player.pos);
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            floorMgr.DrawFloorHUD(screenW); // Draw Floor Depth Banner
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+        classMgr.DrawClassSelectionMenu(screenW, screenH, mousePos);
+        floorMgr.DrawTransitionOverlay(screenW, screenH);
+
+        DrawText("[C] Switch Class  |  F5: Save  |  F9: Load", screenW - 310, 15, 11, RAYWHITE);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
