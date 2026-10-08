@@ -1,0 +1,434 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <cmath>
+#include <algorithm>
+
+#define AUDIO_SAMPLE_RATE 44100
+#define AUDIO_BUFFER_SIZE 2048
+
+enum SoundEffectType {
+    SFX_FOOTSTEP = 0,
+    SFX_SWORD_SWING,
+    SFX_CRITICAL_HIT,
+    SFX_STATUS_POP,
+    SFX_ENEMY_GROWL
+};
+
+struct ActiveSound {
+    SoundEffectType type;
+    float phase = 0.0f;
+    float duration = 0.2f;
+    float timer = 0.0f;
+    Vector2 worldPos = { 0.0f, 0.0f };
+    bool isSpatial = false;
+    float volume = 1.0f;
+};
+
+class AudioSynthesizerManager {
+public:
+    AudioStream audioStream;
+    std::vector<ActiveSound> activeSounds;
+    int16_t pcmBuffer[AUDIO_BUFFER_SIZE * 2]; // Stereo buffer
+
+    void Init() {
+        InitAudioDevice();
+        SetAudioStreamBufferSizeDefault(AUDIO_BUFFER_SIZE);
+        audioStream = LoadAudioStream(AUDIO_SAMPLE_RATE, 16, 2); // 44.1kHz, 16-bit, Stereo
+        PlayAudioStream(audioStream);
+    }
+
+    void Unload() {
+        UnloadAudioStream(audioStream);
+        CloseAudioDevice();
+    }
+
+    void PlaySound2D(SoundEffectType type, float volume = 1.0f) {
+        ActiveSound snd;
+        snd.type = type;
+        snd.phase = 0.0f;
+        snd.timer = 0.0f;
+        snd.isSpatial = false;
+        snd.volume = volume;
+
+        if (type == SFX_FOOTSTEP) snd.duration = 0.08f;
+        else if (type == SFX_SWORD_SWING) snd.duration = 0.18f;
+        else if (type == SFX_CRITICAL_HIT) snd.duration = 0.30f;
+        else if (type == SFX_STATUS_POP) snd.duration = 0.12f;
+        else if (type == SFX_ENEMY_GROWL) snd.duration = 0.40f;
+
+        activeSounds.push_back(snd);
+    }
+
+    void PlaySpatialSound(SoundEffectType type, Vector2 sourcePos, float volume = 1.0f) {
+        ActiveSound snd;
+        snd.type = type;
+        snd.phase = 0.0f;
+        snd.timer = 0.0f;
+        snd.worldPos = sourcePos;
+        snd.isSpatial = true;
+        snd.volume = volume;
+        snd.duration = 0.35f;
+
+        activeSounds.push_back(snd);
+    }
+
+    void Update(Vector2 listenerPos) {
+        if (!IsAudioStreamProcessed(audioStream)) return;
+
+        // Clear Buffer
+        std::fill(pcmBuffer, pcmBuffer + (AUDIO_BUFFER_SIZE * 2), 0);
+
+        float dtSample = 1.0f / (float)AUDIO_SAMPLE_RATE;
+
+        for (int i = 0; i < AUDIO_BUFFER_SIZE; i++) {
+            float leftSample = 0.0f;
+            float rightSample = 0.0f;
+
+            for (auto& snd : activeSounds) {
+                if (snd.timer >= snd.duration) continue;
+
+                float sample = 0.0f;
+                float progress = snd.timer / snd.duration;
+                float envelope = sinf(progress * PI); // Smooth bell envelope
+
+                // Waveform Synthesis
+                if (snd.type == SFX_FOOTSTEP) {
+                    // Low pitched noise click
+                    float noise = ((float)GetRandomValue(-100, 100) / 100.0f);
+                    sample = noise * expf(-progress * 15.0f) * 0.3f;
+                } 
+                else if (snd.type == SFX_SWORD_SWING) {
+                    // Frequency swept noise (whosh)
+                    float freq = 200.0f + (1.0f - progress) * 800.0f;
+                    snd.phase += 2.0f * PI * freq * dtSample;
+                    float noise = ((float)GetRandomValue(-100, 100) / 100.0f);
+                    sample = (sinf(snd.phase) * 0.4f + noise * 0.6f) * envelope * 0.5f;
+                } 
+                else if (snd.type == SFX_CRITICAL_HIT) {
+                    // High pitch frequency drop
+                    float freq = 1200.0f - progress * 800.0f;
+                    snd.phase += 2.0f * PI * freq * dtSample;
+                    sample = sinf(snd.phase) * envelope * 0.8f;
+                } 
+                else if (snd.type == SFX_STATUS_POP) {
+                    // Quick arpeggio chirp
+                    float freq = 600.0f + progress * 1200.0f;
+                    snd.phase += 2.0f * PI * freq * dtSample;
+                    sample = sinf(snd.phase) * envelope * 0.4f;
+                } 
+                else if (snd.type == SFX_ENEMY_GROWL) {
+                    // Frequency Modulated growl
+                    float mod = sinf(snd.phase * 0.1f) * 50.0f;
+                    float freq = 120.0f + mod;
+                    snd.phase += 2.0f * PI * freq * dtSample;
+                    sample = sinf(snd.phase) * envelope * 0.6f;
+                }
+
+                // Calculate 2D Spatial Attenuation & Pan
+                float leftGain = 1.0f;
+                float rightGain = 1.0f;
+
+                if (snd.isSpatial) {
+                    Vector2 diff = Vector2Subtract(snd.worldPos, listenerPos);
+                    float dist = Vector2Length(diff);
+                    float maxDist = 600.0f;
+
+                    // Distance Attenuation
+                    float attenuation = std::max(0.0f, 1.0f - (dist / maxDist));
+                    attenuation *= attenuation; // Inverse square approximation
+
+                    // Stereo Pan (-1.0 Left to +1.0 Right)
+                    float pan = (dist > 0.01f) ? (diff.x / maxDist) : 0.0f;
+                    pan = std::clamp(pan, -1.0f, 1.0f);
+
+                    leftGain = attenuation * (0.5f - pan * 0.5f);
+                    rightGain = attenuation * (0.5f + pan * 0.5f);
+                }
+
+                leftSample += sample * leftGain * snd.volume;
+                rightSample += sample * rightGain * snd.volume;
+
+                snd.timer += dtSample;
+            }
+
+            // Clamp and convert to 16-bit PCM integer
+            leftSample = std::clamp(leftSample, -1.0f, 1.0f);
+            rightSample = std::clamp(rightSample, -1.0f, 1.0f);
+
+            pcmBuffer[i * 2] = (int16_t)(leftSample * 32767.0f);
+            pcmBuffer[i * 2 + 1] = (int16_t)(rightSample * 32767.0f);
+        }
+
+        // Cleanup finished sounds
+        activeSounds.erase(
+            std::remove_if(activeSounds.begin(), activeSounds.end(), [](const ActiveSound& s) {
+                return s.timer >= s.duration;
+            }),
+            activeSounds.end()
+        );
+
+        UpdateAudioStream(audioStream, pcmBuffer, AUDIO_BUFFER_SIZE);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Procedural Audio Synthesizer & Spatializer");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+    AudioSynthesizerManager synthAudio;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+    synthAudio.Init();
+
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    auto GenerateFloorContent = [&]() {
+        dungeon.Generate();
+        minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+        eliteMgr.GenerateMinibossRoom(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+        std::vector<Vector2> floorTiles;
+        for (int r = 0; r < DUNGEON_ROWS; r++) {
+            for (int c = 0; c < DUNGEON_COLS; c++) {
+                if (dungeon.grid[r][c] == TILE_FLOOR) {
+                    floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+                }
+            }
+        }
+
+        BiomeType bType = (floorMgr.currentFloor % 2 == 0) ? BIOME_ICE_VAULTS : BIOME_LAVA_CAVERNS;
+        biomeMgr.PopulateDungeonFeatures(floorTiles, bType);
+
+        if (floorTiles.size() > 50) {
+            floorMgr.SpawnFloorExits(floorTiles[15], floorTiles[45], floorMgr.currentFloor + 3);
+            player.pos = floorTiles[0];
+        }
+    };
+
+    GenerateFloorContent();
+
+    float footstepTimer = 0.0f;
+    float ambientGrowlTimer = 0.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+        synthAudio.Update(player.pos); // Process audio synthesis with player as spatial listener
+
+        if (IsKeyPressed(KEY_C)) {
+            classMgr.isClassSelectionOpen = !classMgr.isClassSelectionOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        // Movement Footstep SFX Trigger
+        if (Vector2Length(input.moveInput) > 0.1f) {
+            footstepTimer += dt;
+            if (footstepTimer >= 0.35f) {
+                synthAudio.PlaySound2D(SFX_FOOTSTEP, 0.4f);
+                footstepTimer = 0.0f;
+            }
+        }
+
+        // Ambient Spatial Growl from nearest Elite
+        ambientGrowlTimer += dt;
+        if (ambientGrowlTimer >= 4.0f) {
+            if (!eliteMgr.elites.empty()) {
+                synthAudio.PlaySpatialSound(SFX_ENEMY_GROWL, eliteMgr.elites[0].pos, 0.8f);
+            }
+            ambientGrowlTimer = 0.0f;
+        }
+
+        if (!classMgr.isClassSelectionOpen && !metaMgr.isUIOpen && !talentTree.isOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+
+                // Play Attack Swing Synth SFX
+                synthAudio.PlaySound2D(SFX_SWORD_SWING, 0.6f);
+
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                    if (isCrit) {
+                        totalDmg *= 1.75f;
+                        synthAudio.PlaySound2D(SFX_CRITICAL_HIT, 0.9f); // Play Crit SFX
+                    }
+
+                    combatUIMgr.SpawnDamageText(classMgr.activeHitbox.center, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+                    eliteMgr.ApplyDamageToElites(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, totalDmg, classMgr.activeHitbox.knockbackForce, player.pos, player.health, particles);
+                }
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+                synthAudio.PlaySound2D(SFX_STATUS_POP, 0.8f);
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        bool shouldRegenFloor = false;
+        if (portals.currentScene == SCENE_DUNGEON) {
+            floorMgr.Update(dt, player.pos, shouldRegenFloor);
+            if (shouldRegenFloor) {
+                GenerateFloorContent();
+                floorMgr.isTransitioning = false;
+            }
+        }
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen || classMgr.isClassSelectionOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen && !floorMgr.isTransitioning) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                eliteMgr.Update(dt, player.pos, player.health, particles);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    floorMgr.DrawWorldSpace();
+                    biomeMgr.DrawTrapsAndShrines();
+                    eliteMgr.DrawInWorldSpace();
+                    combatMgr.DrawTelegraphs();
+                    boss.Draw();
+                }
+
+                classMgr.DrawAttackVisuals(player.pos);
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            floorMgr.DrawFloorHUD(screenW);
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+        classMgr.DrawClassSelectionMenu(screenW, screenH, mousePos);
+        floorMgr.DrawTransitionOverlay(screenW, screenH);
+
+        DrawText("Audio Synth: ACTIVE (44.1kHz Stereo)", 20, 15, 11, GREEN);
+
+        EndDrawing();
+    }
+
+    synthAudio.Unload();
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
