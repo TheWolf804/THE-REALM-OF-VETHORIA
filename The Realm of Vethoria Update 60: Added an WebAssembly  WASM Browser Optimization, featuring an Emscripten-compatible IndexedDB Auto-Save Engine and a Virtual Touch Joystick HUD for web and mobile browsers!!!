@@ -1,0 +1,414 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+#endif
+
+struct VirtualJoystick {
+    Vector2 center = { 120.0f, 600.0f };
+    float outerRadius = 60.0f;
+    float innerRadius = 25.0f;
+    Vector2 handlePos = { 120.0f, 600.0f };
+    bool isDragging = false;
+    int touchId = -1;
+    Vector2 outputVector = { 0.0f, 0.0f };
+};
+
+struct TouchActionButton {
+    Rectangle bounds;
+    std::string label;
+    Color color;
+    bool isPressed = false;
+};
+
+class WasmWebManager {
+public:
+    VirtualJoystick joystick;
+    TouchActionButton dodgeButton;
+    TouchActionButton abilityButton;
+    bool isMobileOrWebTouch = false;
+
+    void Init() {
+#if defined(__EMSCRIPTEN__)
+        // Mount Persistent Virtual File System (MEMFS -> IndexedDB)
+        EM_ASM(
+            FS.mkdir('/offline');
+            FS.mount(IDBFS, {}, '/offline');
+            FS.syncfs(true, function (err) {
+                if (err) console.error('IndexedDB Mount Error:', err);
+                else console.log('IndexedDB Persistent Filesystem Mounted!');
+            });
+        );
+#endif
+
+        // Setup Virtual Touch Controls
+        joystick.center = { 120.0f, 580.0f };
+        joystick.handlePos = joystick.center;
+
+        dodgeButton = { { 1100.0f, 550.0f, 70.0f, 70.0f }, "DODGE", SKYBLUE, false };
+        abilityButton = { { 1190.0f, 470.0f, 70.0f, 70.0f }, "ABILITY", GOLD, false };
+    }
+
+    void SyncToIndexedDB() {
+#if defined(__EMSCRIPTEN__)
+        // Flush memory virtual filesystem to IndexedDB
+        EM_ASM(
+            FS.syncfs(false, function (err) {
+                if (err) console.error('IndexedDB Auto-Save Sync Error:', err);
+                else console.log('Game State Successfully Synced to IndexedDB!');
+            });
+        );
+#endif
+    }
+
+    void UpdateTouchControls(Vector2& outMoveInput, bool& outDodgeTrigger, bool& outAbilityTrigger) {
+        outDodgeTrigger = false;
+        outAbilityTrigger = false;
+
+        int touchCount = GetTouchPointCount();
+        if (touchCount > 0) isMobileOrWebTouch = true;
+
+        if (!isMobileOrWebTouch) return;
+
+        // 1. Process Virtual Joystick Touch Drag
+        bool foundJoystickTouch = false;
+        for (int i = 0; i < touchCount; i++) {
+            Vector2 touchPos = GetTouchPosition(i);
+
+            if (!joystick.isDragging && CheckCollisionCircles(touchPos, 20.0f, joystick.center, joystick.outerRadius)) {
+                joystick.isDragging = true;
+                joystick.touchId = i;
+            }
+
+            if (joystick.isDragging && joystick.touchId == i) {
+                foundJoystickTouch = true;
+                Vector2 diff = Vector2Subtract(touchPos, joystick.center);
+                float dist = Vector2Length(diff);
+
+                if (dist > joystick.outerRadius) {
+                    diff = Vector2Scale(Vector2Normalize(diff), joystick.outerRadius);
+                }
+
+                joystick.handlePos = Vector2Add(joystick.center, diff);
+                joystick.outputVector = Vector2Scale(diff, 1.0f / joystick.outerRadius);
+                outMoveInput = joystick.outputVector;
+            }
+
+            // 2. Process Action Buttons
+            if (CheckCollisionPointRec(touchPos, dodgeButton.bounds)) {
+                if (!dodgeButton.isPressed) {
+                    outDodgeTrigger = true;
+                    dodgeButton.isPressed = true;
+                }
+            } else {
+                dodgeButton.isPressed = false;
+            }
+
+            if (CheckCollisionPointRec(touchPos, abilityButton.bounds)) {
+                if (!abilityButton.isPressed) {
+                    outAbilityTrigger = true;
+                    abilityButton.isPressed = true;
+                }
+            } else {
+                abilityButton.isPressed = false;
+            }
+        }
+
+        if (!foundJoystickTouch) {
+            joystick.isDragging = false;
+            joystick.handlePos = joystick.center;
+            joystick.outputVector = { 0.0f, 0.0f };
+        }
+    }
+
+    void DrawTouchControlsHUD() {
+        if (!isMobileOrWebTouch) return;
+
+        // Draw Virtual Joystick
+        DrawCircleV(joystick.center, joystick.outerRadius, ColorAlpha(DARKGRAY, 0.4f));
+        DrawCircleLines((int)joystick.center.x, (int)joystick.center.y, joystick.outerRadius, GRAY);
+        DrawCircleV(joystick.handlePos, joystick.innerRadius, ColorAlpha(SKYBLUE, 0.8f));
+
+        // Draw Touch Buttons
+        DrawRectangleRounded(dodgeButton.bounds, 0.3f, 4, ColorAlpha(dodgeButton.color, dodgeButton.isPressed ? 0.9f : 0.5f));
+        DrawRectangleRoundedLinesEx(dodgeButton.bounds, 0.3f, 4, 2.0f, WHITE);
+        DrawText(dodgeButton.label.c_str(), (int)dodgeButton.bounds.x + 12, (int)dodgeButton.bounds.y + 28, 11, WHITE);
+
+        DrawRectangleRounded(abilityButton.bounds, 0.3f, 4, ColorAlpha(abilityButton.color, abilityButton.isPressed ? 0.9f : 0.5f));
+        DrawRectangleRoundedLinesEx(abilityButton.bounds, 0.3f, 4, 2.0f, WHITE);
+        DrawText(abilityButton.label.c_str(), (int)abilityButton.bounds.x + 8, (int)abilityButton.bounds.y + 28, 10, WHITE);
+    }
+cmake_minimum_required(VERSION 3.16)
+project(VethoriaWasm CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+
+# Emscripten Specific Compiler & Linker Flags
+if(EMSCRIPTEN)
+    set(CMAKE_EXECUTABLE_SUFFIX ".html")
+    add_compile_options(-Os -Wall)
+    
+    # Link Emscripten HTML5, WebGL2, Audio & IDBFS libraries
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -s USE_GLFW=3 -s USE_RAYLIB=1 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s FORCE_FILESYSTEM=1 -s LIDBFS=1 --shell-file shell_minimal.html")
+endif()
+
+add_executable(Vethoria src/main.cpp)
+};
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+#include "WasmWebManager.h"
+
+// Global Context for Emscripten Web Loop Frame Callback
+struct GameContext {
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine* lighting;
+    CameraManager* cameraMgr;
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+    AudioSynthesizerManager synthAudio;
+    WasmWebManager wasmWeb;
+    int screenW = 1280;
+    int screenH = 720;
+    float autoSaveTimer = 0.0f;
+};
+
+GameContext* g_ctx = nullptr;
+
+void UpdateAndRenderFrame() {
+    float dt = GetFrameTime();
+    Vector2 mousePos = GetMousePosition();
+
+    g_ctx->input.Update();
+    g_ctx->combatUIMgr.Update(dt);
+    g_ctx->synthAudio.Update(g_ctx->player.pos);
+
+    // Handle Virtual Touch Inputs on Mobile/Browser
+    Vector2 touchMove = { 0.0f, 0.0f };
+    bool touchDodge = false;
+    bool touchAbility = false;
+    g_ctx->wasmWeb.UpdateTouchControls(touchMove, touchDodge, touchAbility);
+
+    if (Vector2Length(touchMove) > 0.01f) {
+        g_ctx->input.moveInput = touchMove;
+    }
+
+    // Auto-Save to IndexedDB every 30 seconds
+    g_ctx->autoSaveTimer += dt;
+    if (g_ctx->autoSaveTimer >= 30.0f) {
+        g_ctx->wasmWeb.SyncToIndexedDB();
+        g_ctx->autoSaveTimer = 0.0f;
+    }
+
+    if (IsKeyPressed(KEY_C)) {
+        g_ctx->classMgr.isClassSelectionOpen = !g_ctx->classMgr.isClassSelectionOpen;
+    }
+
+    ClassProfile prof = g_ctx->classMgr.GetCurrentProfile();
+    g_ctx->player.maxHealth = prof.maxHealth;
+
+    g_ctx->classMgr.Update(dt, g_ctx->player.pos, g_ctx->particles);
+
+    if (!g_ctx->classMgr.isClassSelectionOpen && !g_ctx->metaMgr.isUIOpen && !g_ctx->talentTree.isOpen) {
+        if (g_ctx->input.attackPressed) {
+            Vector2 aimDir = (g_ctx->input.currentInputType == CTRL_GAMEPAD) ? g_ctx->input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, g_ctx->cameraMgr->camera), g_ctx->player.pos);
+            g_ctx->classMgr.TriggerAttack(g_ctx->player.pos, aimDir);
+            g_ctx->synthAudio.PlaySound2D(SFX_SWORD_SWING, 0.6f);
+
+            if (g_ctx->classMgr.activeHitbox.active) {
+                float totalDmg = prof.baseDamage * g_ctx->classMgr.activeHitbox.damageMultiplier;
+                bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                if (isCrit) {
+                    totalDmg *= 1.75f;
+                    g_ctx->synthAudio.PlaySound2D(SFX_CRITICAL_HIT, 0.9f);
+                }
+
+                g_ctx->combatUIMgr.SpawnDamageText(g_ctx->classMgr.activeHitbox.center, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+                g_ctx->eliteMgr.ApplyDamageToElites(g_ctx->classMgr.activeHitbox.center, g_ctx->classMgr.activeHitbox.radius, totalDmg, g_ctx->classMgr.activeHitbox.knockbackForce, g_ctx->player.pos, g_ctx->player.health, g_ctx->particles);
+            }
+        }
+
+        if (IsKeyPressed(KEY_Q) || touchAbility || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+            g_ctx->classMgr.TriggerActiveAbility(g_ctx->player.pos, g_ctx->particles);
+            g_ctx->synthAudio.PlaySound2D(SFX_STATUS_POP, 0.8f);
+        }
+    }
+
+    g_ctx->gearMgr.Update(dt, g_ctx->player.pos);
+    g_ctx->talentTree.Update(mousePos);
+    g_ctx->combatMgr.Update(dt, g_ctx->player.pos, g_ctx->player.health, g_ctx->boss.hp);
+
+    bool shouldRegenFloor = false;
+    if (g_ctx->portals.currentScene == SCENE_DUNGEON) {
+        g_ctx->floorMgr.Update(dt, g_ctx->player.pos, shouldRegenFloor);
+    }
+
+    if (g_ctx->portals.currentScene == SCENE_TOWN_HUB) {
+        g_ctx->metaMgr.CheckNPCInteractions(g_ctx->player.pos);
+    }
+
+    bool menuOpen = g_ctx->talentTree.isOpen || g_ctx->gearMgr.isInventoryOpen || g_ctx->metaMgr.isUIOpen || g_ctx->classMgr.isClassSelectionOpen;
+
+    if (g_ctx->combatMgr.hitStopTimer <= 0.0f && !menuOpen && !g_ctx->floorMgr.isTransitioning) {
+        g_ctx->portals.Update(dt, g_ctx->player.pos, g_ctx->dungeon, g_ctx->particles);
+        g_ctx->audio.Update(dt);
+
+        if (Vector2Length(g_ctx->input.moveInput) > 0.0f) {
+            g_ctx->player.pos.x += g_ctx->input.moveInput.x * prof.moveSpeed * dt;
+            g_ctx->player.pos.y += g_ctx->input.moveInput.y * prof.moveSpeed * dt;
+        }
+
+        if (g_ctx->portals.currentScene == SCENE_DUNGEON) {
+            g_ctx->biomeMgr.Update(dt, g_ctx->player.pos, g_ctx->player.health);
+            g_ctx->eliteMgr.Update(dt, g_ctx->player.pos, g_ctx->player.health, g_ctx->particles);
+            g_ctx->player.Update(dt, g_ctx->particles);
+            g_ctx->minimap.Update(g_ctx->player.pos);
+
+            if (g_ctx->boss.hp > 0.0f) {
+                g_ctx->boss.Update(dt, g_ctx->player.pos, g_ctx->player.health, g_ctx->particles);
+            }
+        } else {
+            g_ctx->town.Update(g_ctx->player.pos, g_ctx->player.gold);
+            g_ctx->player.Update(dt, g_ctx->particles);
+        }
+
+        g_ctx->particles.Update(dt);
+        g_ctx->cameraMgr->Update(g_ctx->player.pos, g_ctx->boss.pos, g_ctx->portals.currentScene == SCENE_DUNGEON && g_ctx->boss.hp > 0, dt);
+    }
+
+    // Render Frame
+    g_ctx->postFX.BeginRenderPass();
+        g_ctx->cameraMgr->BeginMode();
+            if (g_ctx->portals.currentScene == SCENE_TOWN_HUB) {
+                g_ctx->town.DrawHubWorld(g_ctx->player.pos);
+                g_ctx->metaMgr.DrawWorldNPCs(g_ctx->player.pos);
+            } else {
+                g_ctx->dungeon.Draw();
+                g_ctx->floorMgr.DrawWorldSpace();
+                g_ctx->biomeMgr.DrawTrapsAndShrines();
+                g_ctx->eliteMgr.DrawInWorldSpace();
+                g_ctx->combatMgr.DrawTelegraphs();
+                g_ctx->boss.Draw();
+            }
+
+            g_ctx->classMgr.DrawAttackVisuals(g_ctx->player.pos);
+            g_ctx->gearMgr.DrawWorldLootBeams();
+            g_ctx->portals.DrawPortalWorldSpace(g_ctx->player.pos);
+            g_ctx->player.Draw();
+            g_ctx->particles.Draw();
+
+            g_ctx->combatUIMgr.DrawFloatingTexts(g_ctx->cameraMgr->camera);
+
+            g_ctx->lighting->BeginLightPass();
+            g_ctx->lighting->DrawLight(g_ctx->player.pos, 260.0f, prof.themeColor, 0.85f);
+            g_ctx->lighting->EndLightPass(g_ctx->portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : g_ctx->biomeMgr.GetBiomeTheme(g_ctx->biomeMgr.currentBiome).ambientLightColor);
+        g_ctx->cameraMgr->EndMode();
+    
+    g_ctx->postFX.EndRenderPassAndApplyFX(dt, g_ctx->player.health, g_ctx->player.maxHealth, g_ctx->screenW, g_ctx->screenH);
+
+    // HUD & Overlays
+    g_ctx->player.DrawHUD();
+    g_ctx->combatMgr.DrawCombatHUD(g_ctx->screenW);
+    g_ctx->input.DrawInputTypeHUD(g_ctx->screenW, g_ctx->screenH);
+    g_ctx->classMgr.DrawClassAndAbilityHUD(g_ctx->screenW, g_ctx->screenH);
+    g_ctx->wasmWeb.DrawTouchControlsHUD(); // Render Virtual Joystick on Mobile/Browser Touch
+    
+    if (g_ctx->portals.currentScene == SCENE_DUNGEON) {
+        g_ctx->biomeMgr.DrawBuffHUD();
+        g_ctx->floorMgr.DrawFloorHUD(g_ctx->screenW);
+        g_ctx->minimap.DrawMinimapHUD(g_ctx->screenW, g_ctx->dungeon, g_ctx->player.pos, g_ctx->boss.pos, g_ctx->boss.hp > 0, g_ctx->portals.dungeonReturnPortal.pos, g_ctx->portals.dungeonReturnPortal.active);
+    }
+
+    g_ctx->talentTree.Draw(g_ctx->screenW, g_ctx->screenH, mousePos);
+    g_ctx->gearMgr.DrawEquipmentUI(g_ctx->screenW, g_ctx->screenH, mousePos);
+    g_ctx->metaMgr.DrawVendorUI(g_ctx->screenW, g_ctx->screenH, g_ctx->player.gold, mousePos);
+    g_ctx->classMgr.DrawClassSelectionMenu(g_ctx->screenW, g_ctx->screenH, mousePos);
+    g_ctx->floorMgr.DrawTransitionOverlay(g_ctx->screenW, g_ctx->screenH);
+
+    DrawText("PLATFORM: WASM / EMBEDDED WEB", 20, 15, 11, SKYBLUE);
+
+    EndDrawing();
+}
+
+int main() {
+    g_ctx = new GameContext();
+    InitWindow(g_ctx->screenW, g_ctx->screenH, "Vethoria: WASM Web Play & IndexedDB Auto-Save");
+
+    g_ctx->lighting = new LightEngine(g_ctx->screenW, g_ctx->screenH);
+    g_ctx->cameraMgr = new CameraManager(g_ctx->screenW, g_ctx->screenH);
+
+    g_ctx->postFX.Init(g_ctx->screenW, g_ctx->screenH);
+    g_ctx->town.InitHub();
+    g_ctx->audio.Init();
+    g_ctx->talentTree.Init();
+    g_ctx->metaMgr.InitNPCs();
+    g_ctx->classMgr.Init();
+    g_ctx->synthAudio.Init();
+    g_ctx->wasmWeb.Init();
+
+    g_ctx->dungeon.Generate();
+    g_ctx->minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+    g_ctx->player.pos = { 350.0f, 300.0f };
+
+#if defined(__EMSCRIPTEN__)
+    // Register main loop with Emscripten browser scheduler (0 = match display refresh rate)
+    emscripten_set_main_loop(UpdateAndRenderFrame, 0, 1);
+#else
+    SetTargetFPS(60);
+    while (!WindowShouldClose()) {
+        UpdateAndRenderFrame();
+    }
+
+    g_ctx->synthAudio.Unload();
+    g_ctx->audio.Unload();
+    g_ctx->postFX.Unload();
+    CloseWindow();
+    delete g_ctx->lighting;
+    delete g_ctx->cameraMgr;
+    delete g_ctx;
+#endif
+
+    return 0;
+}
