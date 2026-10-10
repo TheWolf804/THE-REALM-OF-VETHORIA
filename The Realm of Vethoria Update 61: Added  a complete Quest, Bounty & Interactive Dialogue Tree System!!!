@@ -1,0 +1,493 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+#include <vector>
+
+enum QuestStatus {
+    QUEST_NOT_STARTED = 0,
+    QUEST_ACTIVE,
+    QUEST_COMPLETED,
+    QUEST_TURNED_IN
+};
+
+enum ObjectiveType {
+    OBJ_KILL_ELITES = 0,
+    OBJ_REACH_FLOOR,
+    OBJ_COLLECT_SOULS
+};
+
+struct QuestObjective {
+    ObjectiveType type;
+    int targetCount;
+    int currentCount;
+    std::string description;
+};
+
+struct Quest {
+    std::string id;
+    std::string title;
+    std::string giverName;
+    QuestObjective objective;
+    int goldReward;
+    int soulReward;
+    QuestStatus status;
+};
+
+struct DialogueNode {
+    int id;
+    std::string speaker;
+    std::string text;
+    std::vector<std::string> options;
+    std::vector<int> nextNodeIds;
+    bool givesQuest;
+    std::string questIdToGive;
+};
+
+class QuestAndBountyManager {
+public:
+    std::vector<Quest> quests;
+    std::vector<DialogueNode> dialogueTree;
+    
+    bool isDialogueOpen = false;
+    int currentNodeId = 0;
+    std::string activeNpcName = "";
+
+    void InitQuests() {
+        quests.clear();
+
+        // Quest 1: Bounty Hunt
+        quests.push_back({
+            "bounty_elites",
+            "Bounty: Cleanse the Caverns",
+            "Kaelen (Blacksmith)",
+            { OBJ_KILL_ELITES, 3, 0, "Slay 3 Elite Affix enemies in the dungeon." },
+            350,
+            2,
+            QUEST_NOT_STARTED
+        });
+
+        // Quest 2: Deep Descent
+        quests.push_back({
+            "deep_descent",
+            "Into the Depths",
+            "Lyra (Alchemist)",
+            { OBJ_REACH_FLOOR, 3, 1, "Descend to Dungeon Floor 3 or lower." },
+            500,
+            3,
+            QUEST_NOT_STARTED
+        });
+
+        // Setup Initial Dialogue Tree for Blacksmith Kaelen
+        dialogueTree = {
+            {
+                0, "Kaelen", "Ah, traveler! The caverns grow more perilous by the day. Will you aid us?",
+                { "Tell me about the bounties.", "Not right now, Kaelen.", "Goodbye." },
+                { 1, 2, -1 },
+                false, ""
+            },
+            {
+                1, "Kaelen", "Monsters bearing dark affixes roam the lower levels. Eliminate 3 elites, and I will reward you handsomely.",
+                { "Accept Bounty: Cleanse the Caverns", "Return to previous topic." },
+                { 3, 0 },
+                true, "bounty_elites"
+            },
+            {
+                2, "Kaelen", "Very well. Return when you seek stronger steel or worthy tasks.",
+                { "Goodbye." },
+                { -1 },
+                false, ""
+            },
+            {
+                3, "Kaelen", "May your blade strike true! Report back once the task is done.",
+                { "Thanks, Kaelen." },
+                { -1 },
+                false, ""
+            }
+        };
+    }
+
+    void StartDialogue(std::string npcName) {
+        activeNpcName = npcName;
+        currentNodeId = 0;
+        isDialogueOpen = true;
+    }
+
+    Quest* GetQuest(std::string id) {
+        for (auto& q : quests) {
+            if (q.id == id) return &q;
+        }
+        return nullptr;
+    }
+
+    void UpdateObjectiveProgress(ObjectiveType type, int amount, int currentFloor) {
+        for (auto& q : quests) {
+            if (q.status != QUEST_ACTIVE) continue;
+
+            if (q.objective.type == type && type == OBJ_KILL_ELITES) {
+                q.objective.currentCount = std::min(q.objective.targetCount, q.objective.currentCount + amount);
+                if (q.objective.currentCount >= q.objective.targetCount) {
+                    q.status = QUEST_COMPLETED;
+                }
+            } else if (q.objective.type == type && type == OBJ_REACH_FLOOR) {
+                if (currentFloor >= q.objective.targetCount) {
+                    q.objective.currentCount = q.objective.targetCount;
+                    q.status = QUEST_COMPLETED;
+                }
+            }
+        }
+    }
+
+    void TurnInQuest(std::string id, int& playerGold, int& bossSouls) {
+        Quest* q = GetQuest(id);
+        if (q && q->status == QUEST_COMPLETED) {
+            playerGold += q->goldReward;
+            bossSouls += q->soulReward;
+            q->status = QUEST_TURNED_IN;
+        }
+    }
+
+    void DrawDialogueUI(int screenW, int screenH, int& playerGold, int& bossSouls) {
+        if (!isDialogueOpen) return;
+
+        DialogueNode* node = nullptr;
+        for (auto& n : dialogueTree) {
+            if (n.id == currentNodeId) {
+                node = &n;
+                break;
+            }
+        }
+        if (!node) return;
+
+        int boxW = 750, boxH = 220;
+        int boxX = (screenW - boxW) / 2;
+        int boxH_Y = screenH - boxH - 40;
+
+        DrawRectangle(boxX, boxH_Y, boxW, boxH, ColorAlpha(GetColor(0x12121BFF), 0.95f));
+        DrawRectangleLines(boxX, boxH_Y, boxW, boxH, GOLD);
+
+        // Speaker Header
+        DrawRectangle(boxX, boxH_Y, boxW, 35, GetColor(0x1C1C28FF));
+        DrawText(node->speaker.c_str(), boxX + 15, boxH_Y + 10, 14, GOLD);
+
+        // Dialogue Body Text
+        DrawText(node->text.c_str(), boxX + 20, boxH_Y + 50, 13, RAYWHITE);
+
+        // Options List
+        int optY = boxH_Y + 95;
+        for (size_t i = 0; i < node->options.size(); i++) {
+            Rectangle optRect = { (float)(boxX + 20), (float)(optY + (int)i * 32), (float)(boxW - 40), 26.0f };
+            bool hovered = CheckCollisionPointRec(GetMousePosition(), optRect);
+
+            DrawRectangleRec(optRect, hovered ? GetColor(0x2A2A3CFF) : GetColor(0x1A1A26FF));
+            DrawRectangleLinesEx(optRect, 1.0f, hovered ? SKYBLUE : DARKGRAY);
+            DrawText(node->options[i].c_str(), (int)optRect.x + 10, (int)optRect.y + 6, 12, hovered ? WHITE : LIGHTGRAY);
+
+            if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                if (node->givesQuest && i == 0) {
+                    Quest* q = GetQuest(node->questIdToGive);
+                    if (q && q->status == QUEST_NOT_STARTED) {
+                        q->status = QUEST_ACTIVE;
+                    }
+                }
+
+                int nextId = node->nextNodeIds[i];
+                if (nextId == -1) {
+                    isDialogueOpen = false;
+                } else {
+                    currentNodeId = nextId;
+                }
+            }
+        }
+    }
+
+    void DrawQuestTrackerHUD(int screenW) {
+        int startX = screenW - 270;
+        int startY = 80;
+
+        for (const auto& q : quests) {
+            if (q.status == QUEST_NOT_STARTED || q.status == QUEST_TURNED_IN) continue;
+
+            DrawRectangle(startX, startY, 250, 65, ColorAlpha(BLACK, 0.75f));
+            DrawRectangleLines(startX, startY, 250, 65, (q.status == QUEST_COMPLETED) ? GREEN : GOLD);
+
+            DrawText(q.title.c_str(), startX + 10, startY + 8, 12, (q.status == QUEST_COMPLETED) ? GREEN : GOLD);
+            DrawText(q.objective.description.c_str(), startX + 10, startY + 28, 10, LIGHTGRAY);
+
+            if (q.status == QUEST_ACTIVE) {
+                DrawText(TextFormat("Progress: %d / %d", q.objective.currentCount, q.objective.targetCount), startX + 10, startY + 46, 10, SKYBLUE);
+            } else {
+                DrawText("COMPLETED! Return to NPC", startX + 10, startY + 46, 10, GREEN);
+            }
+
+            startY += 75;
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+#include "WasmWebManager.h"
+#include "QuestAndBountySystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Quests, Bounties & Dialogue Trees");
+    SetTargetFPS(60);
+
+    Player player;
+    MultiStageBoss boss;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+    AudioSynthesizerManager synthAudio;
+    WasmWebManager wasmWeb;
+    QuestAndBountyManager questMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+    synthAudio.Init();
+    wasmWeb.Init();
+    questMgr.InitQuests();
+
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    auto GenerateFloorContent = [&]() {
+        dungeon.Generate();
+        minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+        eliteMgr.GenerateMinibossRoom(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+        std::vector<Vector2> floorTiles;
+        for (int r = 0; r < DUNGEON_ROWS; r++) {
+            for (int c = 0; c < DUNGEON_COLS; c++) {
+                if (dungeon.grid[r][c] == TILE_FLOOR) {
+                    floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+                }
+            }
+        }
+
+        BiomeType bType = (floorMgr.currentFloor % 2 == 0) ? BIOME_ICE_VAULTS : BIOME_LAVA_CAVERNS;
+        biomeMgr.PopulateDungeonFeatures(floorTiles, bType);
+
+        if (floorTiles.size() > 50) {
+            floorMgr.SpawnFloorExits(floorTiles[15], floorTiles[45], floorMgr.currentFloor + 3);
+            player.pos = floorTiles[0];
+        }
+
+        // Update Floor Quest Objective
+        questMgr.UpdateObjectiveProgress(OBJ_REACH_FLOOR, 1, floorMgr.currentFloor);
+    };
+
+    GenerateFloorContent();
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+        synthAudio.Update(player.pos);
+
+        if (IsKeyPressed(KEY_C)) {
+            classMgr.isClassSelectionOpen = !classMgr.isClassSelectionOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (!classMgr.isClassSelectionOpen && !metaMgr.isUIOpen && !talentTree.isOpen && !questMgr.isDialogueOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+                synthAudio.PlaySound2D(SFX_SWORD_SWING, 0.6f);
+
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                    if (isCrit) {
+                        totalDmg *= 1.75f;
+                        synthAudio.PlaySound2D(SFX_CRITICAL_HIT, 0.9f);
+                    }
+
+                    combatUIMgr.SpawnDamageText(classMgr.activeHitbox.center, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+                    
+                    // Check Elite Hits & Quest Progress
+                    size_t eliteCountBefore = eliteMgr.elites.size();
+                    eliteMgr.ApplyDamageToElites(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, totalDmg, classMgr.activeHitbox.knockbackForce, player.pos, player.health, particles);
+                    
+                    // If elite was defeated, update quest progress
+                    for (const auto& e : eliteMgr.elites) {
+                        if (e.hp <= 0.0f) {
+                            questMgr.UpdateObjectiveProgress(OBJ_KILL_ELITES, 1, floorMgr.currentFloor);
+                        }
+                    }
+                }
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+                synthAudio.PlaySound2D(SFX_STATUS_POP, 0.8f);
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, boss.hp);
+
+        bool shouldRegenFloor = false;
+        if (portals.currentScene == SCENE_DUNGEON) {
+            floorMgr.Update(dt, player.pos, shouldRegenFloor);
+            if (shouldRegenFloor) {
+                GenerateFloorContent();
+                floorMgr.isTransitioning = false;
+            }
+        }
+
+        // Town Hub NPC & Dialogue Trigger
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+            if (IsKeyPressed(KEY_E) && !questMgr.isDialogueOpen) {
+                for (const auto& npc : metaMgr.npcs) {
+                    if (CheckCollisionCircles(player.pos, 24.0f, npc.position, 40.0f)) {
+                        questMgr.StartDialogue(npc.name);
+                        break;
+                    }
+                }
+            }
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen || classMgr.isClassSelectionOpen || questMgr.isDialogueOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen && !floorMgr.isTransitioning) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                eliteMgr.Update(dt, player.pos, player.health, particles);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+
+                if (boss.hp > 0.0f) {
+                    boss.Update(dt, player.pos, player.health, particles);
+                }
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, boss.pos, portals.currentScene == SCENE_DUNGEON && boss.hp > 0, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    floorMgr.DrawWorldSpace();
+                    biomeMgr.DrawTrapsAndShrines();
+                    eliteMgr.DrawInWorldSpace();
+                    combatMgr.DrawTelegraphs();
+                    boss.Draw();
+                }
+
+                classMgr.DrawAttackVisuals(player.pos);
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        questMgr.DrawQuestTrackerHUD(screenW);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            floorMgr.DrawFloorHUD(screenW);
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, boss.pos, boss.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+        classMgr.DrawClassSelectionMenu(screenW, screenH, mousePos);
+        questMgr.DrawDialogueUI(screenW, screenH, player.gold, metaMgr.bossSouls);
+        floorMgr.DrawTransitionOverlay(screenW, screenH);
+
+        DrawText("Quest & Dialogue System: ACTIVE", 20, 15, 11, GREEN);
+
+        EndDrawing();
+    }
+
+    synthAudio.Unload();
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
