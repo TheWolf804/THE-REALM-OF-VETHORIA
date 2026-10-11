@@ -1,0 +1,454 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "ParticleEngine.h"
+#include <vector>
+#include <string>
+#include <cmath>
+
+enum ElementalAffinity {
+    ELEMENT_FIRE = 0,
+    ELEMENT_ICE,
+    ELEMENT_VOID,
+    ELEMENT_COUNT
+};
+
+enum FloorMutatorType {
+    MUTATOR_NONE = 0,
+    MUTATOR_TOXIC_FLOOR,
+    MUTATOR_DOUBLE_ELITES,
+    MUTATOR_ENRAGED_TIMER,
+    MUTATOR_COUNT
+};
+
+struct BossPhase {
+    ElementalAffinity element;
+    float hpThreshold; // e.g. 0.66f for 66% HP
+    float attackInterval;
+    Color themeColor;
+    std::string phaseName;
+};
+
+struct FloorMutatorCard {
+    FloorMutatorType type;
+    std::string name;
+    std::string description;
+    Color color;
+};
+
+class ProceduralBossAndMutatorManager {
+public:
+    // Boss State
+    std::string bossName;
+    Vector2 bossPos;
+    float hp = 1000.0f;
+    float maxHp = 1000.0f;
+    float radius = 35.0f;
+    int currentPhaseIndex = 0;
+    std::vector<BossPhase> phases;
+    float attackTimer = 0.0f;
+
+    // Active Floor Mutator
+    FloorMutatorCard activeMutator;
+    float enragedTimer = 180.0f; // 3 minutes for ENRAGED_TIMER
+    float toxicTickTimer = 0.0f;
+
+    void GenerateProceduralBoss(int floorLevel) {
+        hp = 800.0f + floorLevel * 300.0f;
+        maxHp = hp;
+        currentPhaseIndex = 0;
+        attackTimer = 0.0f;
+
+        // Generate Boss Name
+        const char* titles[] = { "Pyrexia", "Glacior", "Nihilus", "Ignis", "Zero" };
+        const char* epithets[] = { "The Undying Flame", "Sovereign of Frost", "Void Harvester", "The Scourge" };
+        bossName = TextFormat("%s, %s", titles[GetRandomValue(0, 4)], epithets[GetRandomValue(0, 3)]);
+
+        // Synthesize 3 Distinct Elemental Phases
+        phases = {
+            { ELEMENT_FIRE, 0.66f, 2.0f, ORANGE, "Phase I: Infernal Eruption" },
+            { ELEMENT_ICE, 0.33f, 1.5f, SKYBLUE, "Phase II: Glacial Absolute" },
+            { ELEMENT_VOID, 0.00f, 1.0f, PURPLE, "Phase III: Void Collapse" }
+        };
+    }
+
+    void RollFloorMutator() {
+        int rolled = GetRandomValue(1, MUTATOR_COUNT - 1);
+        FloorMutatorType mType = (FloorMutatorType)rolled;
+
+        switch (mType) {
+            case MUTATOR_TOXIC_FLOOR:
+                activeMutator = { MUTATOR_TOXIC_FLOOR, "Toxic Miasma", "Floor emits poisonous fumes taking 5 HP/s tick damage.", LIME };
+                break;
+            case MUTATOR_DOUBLE_ELITES:
+                activeMutator = { MUTATOR_DOUBLE_ELITES, "Elite Infestation", "Elite champion spawn rate doubled with dual affixes.", VIOLET };
+                break;
+            case MUTATOR_ENRAGED_TIMER:
+                activeMutator = { MUTATOR_ENRAGED_TIMER, "Enraged Countdown", "Slay the floor boss within 180s or face instant wipe.", RED };
+                enragedTimer = 180.0f;
+                break;
+            default:
+                activeMutator = { MUTATOR_NONE, "Standard Dungeon", "No active environmental mutators.", GRAY };
+                break;
+        }
+    }
+
+    void Update(float dt, Vector2 playerPos, float& playerHp, ParticleEngine& particles) {
+        // 1. Update Floor Mutators
+        if (activeMutator.type == MUTATOR_TOXIC_FLOOR) {
+            toxicTickTimer += dt;
+            if (toxicTickTimer >= 1.0f) {
+                playerHp -= 5.0f;
+                toxicTickTimer = 0.0f;
+                particles.SpawnParticle(playerPos, { (float)GetRandomValue(-20, 20), -40.0f }, LIME, 0.4f, 3.0f);
+            }
+        } else if (activeMutator.type == MUTATOR_ENRAGED_TIMER) {
+            enragedTimer -= dt;
+            if (enragedTimer <= 0.0f) {
+                playerHp = 0.0f; // Instant wipe timer expiry
+            }
+        }
+
+        if (hp <= 0.0f) return;
+
+        // 2. Phase Transition Check
+        float hpRatio = hp / maxHp;
+        if (currentPhaseIndex == 0 && hpRatio <= phases[0].hpThreshold) {
+            currentPhaseIndex = 1;
+        } else if (currentPhaseIndex == 1 && hpRatio <= phases[1].hpThreshold) {
+            currentPhaseIndex = 2;
+        }
+
+        // 3. Execute Phase Attacks
+        BossPhase curPhase = phases[currentPhaseIndex];
+        attackTimer += dt;
+
+        if (attackTimer >= curPhase.attackInterval) {
+            attackTimer = 0.0f;
+
+            if (curPhase.element == ELEMENT_FIRE) {
+                // Fire Nova Attack
+                for (int i = 0; i < 20; i++) {
+                    float angle = (float)i * (2.0f * PI / 20.0f);
+                    Vector2 dir = { cosf(angle), sinf(angle) };
+                    particles.SpawnParticle(bossPos, Vector2Scale(dir, 200.0f), ORANGE, 0.5f, 6.0f);
+                }
+            } else if (curPhase.element == ELEMENT_ICE) {
+                // Glacial Ring Attack
+                for (int i = 0; i < 28; i++) {
+                    float angle = (float)i * (2.0f * PI / 28.0f);
+                    Vector2 dir = { cosf(angle), sinf(angle) };
+                    particles.SpawnParticle(bossPos, Vector2Scale(dir, 150.0f), SKYBLUE, 0.7f, 5.0f);
+                }
+            } else if (curPhase.element == ELEMENT_VOID) {
+                // Void Collapse Attraction
+                Vector2 pullDir = Vector2Normalize(Vector2Subtract(bossPos, playerPos));
+                particles.SpawnParticle(playerPos, Vector2Scale(pullDir, 300.0f), PURPLE, 0.4f, 7.0f);
+            }
+        }
+    }
+
+    void DrawInWorldSpace() {
+        if (hp <= 0.0f) return;
+
+        BossPhase curPhase = phases[currentPhaseIndex];
+
+        // Draw Boss Body
+        DrawCircleV(bossPos, radius, curPhase.themeColor);
+        DrawCircleLines((int)bossPos.x, (int)bossPos.y, radius + 4.0f, GOLD);
+
+        // Draw Dynamic Phase Aura
+        float pulse = sinf(GetTime() * 6.0f) * 6.0f;
+        DrawCircleLines((int)bossPos.x, (int)bossPos.y, radius + 12.0f + pulse, ColorAlpha(curPhase.themeColor, 0.6f));
+    }
+
+    void DrawBossAndMutatorHUD(int screenW) {
+        if (hp > 0.0f) {
+            // Top Boss Health Bar
+            int barW = 500, barH = 22;
+            int barX = (screenW - barW) / 2;
+            int barY = 55;
+
+            BossPhase curPhase = phases[currentPhaseIndex];
+
+            DrawRectangle(barX, barY, barW, barH, ColorAlpha(BLACK, 0.85f));
+            float hpRatio = hp / maxHp;
+            DrawRectangle(barX, barY, (int)(barW * hpRatio), barH, curPhase.themeColor);
+            DrawRectangleLines(barX, barY, barW, barH, GOLD);
+
+            DrawText(bossName.c_str(), barX + 10, barY - 18, 14, GOLD);
+            DrawText(curPhase.phaseName.c_str(), barX + barW - MeasureText(curPhase.phaseName.c_str(), 11) - 10, barY - 16, 11, curPhase.themeColor);
+        }
+
+        // Active Mutator Banner (Top Left HUD)
+        if (activeMutator.type != MUTATOR_NONE) {
+            int cardW = 240, cardH = 50;
+            int cardX = 20, cardY = 90;
+
+            DrawRectangle(cardX, cardY, cardW, cardH, ColorAlpha(BLACK, 0.8f));
+            DrawRectangleLines(cardX, cardY, cardW, cardH, activeMutator.color);
+
+            DrawText(TextFormat("MUTATOR: %s", activeMutator.name.c_str()), cardX + 10, cardY + 8, 11, activeMutator.color);
+
+            if (activeMutator.type == MUTATOR_ENRAGED_TIMER) {
+                DrawText(TextFormat("Time Left: %.0fs", enragedTimer), cardX + 10, cardY + 28, 12, RED);
+            } else {
+                DrawText(activeMutator.description.c_str(), cardX + 10, cardY + 28, 9, GRAY);
+            }
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+#include "WasmWebManager.h"
+#include "QuestAndBountySystem.h"
+#include "ProceduralBossAndMutatorSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Procedural Bosses & Floor Mutators");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+    AudioSynthesizerManager synthAudio;
+    WasmWebManager wasmWeb;
+    QuestAndBountyManager questMgr;
+    ProceduralBossAndMutatorManager proceduralBossMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+    synthAudio.Init();
+    wasmWeb.Init();
+    questMgr.InitQuests();
+
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    auto GenerateFloorContent = [&]() {
+        dungeon.Generate();
+        minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+        eliteMgr.GenerateMinibossRoom(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+        std::vector<Vector2> floorTiles;
+        for (int r = 0; r < DUNGEON_ROWS; r++) {
+            for (int c = 0; c < DUNGEON_COLS; c++) {
+                if (dungeon.grid[r][c] == TILE_FLOOR) {
+                    floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+                }
+            }
+        }
+
+        BiomeType bType = (floorMgr.currentFloor % 2 == 0) ? BIOME_ICE_VAULTS : BIOME_LAVA_CAVERNS;
+        biomeMgr.PopulateDungeonFeatures(floorTiles, bType);
+
+        if (floorTiles.size() > 50) {
+            floorMgr.SpawnFloorExits(floorTiles[15], floorTiles[45], floorMgr.currentFloor + 3);
+            player.pos = floorTiles[0];
+            proceduralBossMgr.bossPos = floorTiles[30];
+        }
+
+        // Roll Mutator & Synthesize Boss
+        proceduralBossMgr.RollFloorMutator();
+        proceduralBossMgr.GenerateProceduralBoss(floorMgr.currentFloor);
+        questMgr.UpdateObjectiveProgress(OBJ_REACH_FLOOR, 1, floorMgr.currentFloor);
+    };
+
+    GenerateFloorContent();
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+        synthAudio.Update(player.pos);
+
+        if (IsKeyPressed(KEY_C)) {
+            classMgr.isClassSelectionOpen = !classMgr.isClassSelectionOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (!classMgr.isClassSelectionOpen && !metaMgr.isUIOpen && !talentTree.isOpen && !questMgr.isDialogueOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+                synthAudio.PlaySound2D(SFX_SWORD_SWING, 0.6f);
+
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                    if (isCrit) {
+                        totalDmg *= 1.75f;
+                        synthAudio.PlaySound2D(SFX_CRITICAL_HIT, 0.9f);
+                    }
+
+                    combatUIMgr.SpawnDamageText(classMgr.activeHitbox.center, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+
+                    // Apply Damage to Procedural Boss
+                    if (CheckCollisionCircles(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, proceduralBossMgr.bossPos, proceduralBossMgr.radius)) {
+                        proceduralBossMgr.hp -= totalDmg;
+                    }
+
+                    eliteMgr.ApplyDamageToElites(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, totalDmg, classMgr.activeHitbox.knockbackForce, player.pos, player.health, particles);
+                }
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+                synthAudio.PlaySound2D(SFX_STATUS_POP, 0.8f);
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, proceduralBossMgr.hp);
+
+        bool shouldRegenFloor = false;
+        if (portals.currentScene == SCENE_DUNGEON) {
+            floorMgr.Update(dt, player.pos, shouldRegenFloor);
+            if (shouldRegenFloor) {
+                GenerateFloorContent();
+                floorMgr.isTransitioning = false;
+            }
+        }
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen || classMgr.isClassSelectionOpen || questMgr.isDialogueOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen && !floorMgr.isTransitioning) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                eliteMgr.Update(dt, player.pos, player.health, particles);
+                proceduralBossMgr.Update(dt, player.pos, player.health, particles); // Update Procedural Boss & Mutator
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, proceduralBossMgr.bossPos, portals.currentScene == SCENE_DUNGEON && proceduralBossMgr.hp > 0, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    floorMgr.DrawWorldSpace();
+                    biomeMgr.DrawTrapsAndShrines();
+                    eliteMgr.DrawInWorldSpace();
+                    proceduralBossMgr.DrawInWorldSpace(); // Draw Procedural Boss
+                    combatMgr.DrawTelegraphs();
+                }
+
+                classMgr.DrawAttackVisuals(player.pos);
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        questMgr.DrawQuestTrackerHUD(screenW);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            floorMgr.DrawFloorHUD(screenW);
+            proceduralBossMgr.DrawBossAndMutatorHUD(screenW); // Draw Procedural Boss Health & Mutator HUD
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, proceduralBossMgr.bossPos, proceduralBossMgr.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+        classMgr.DrawClassSelectionMenu(screenW, screenH, mousePos);
+        questMgr.DrawDialogueUI(screenW, screenH, player.gold, metaMgr.bossSouls);
+        floorMgr.DrawTransitionOverlay(screenW, screenH);
+
+        EndDrawing();
+    }
+
+    synthAudio.Unload();
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
