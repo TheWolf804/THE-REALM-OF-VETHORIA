@@ -1,0 +1,575 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <algorithm>
+
+enum GemType {
+    GEM_NONE = 0,
+    GEM_RUBY,     // +Fire Damage / +Strength
+    GEM_SAPPHIRE, // +Ice Resistance / +Mana Shield
+    GEM_TOPAZ,    // +Crit Chance / +Gold Find
+    GEM_EMERALD   // +Poison / +Health Steal
+};
+
+enum GemTier {
+    GEM_TIER_CHIPPED = 0,
+    GEM_TIER_FLAWLESS,
+    GEM_TIER_ROYAL
+};
+
+struct SocketableGem {
+    GemType type;
+    GemTier tier;
+    std::string name;
+    int statBonusValue;
+
+    std::string GetStatDescription() const {
+        switch (type) {
+            case GEM_RUBY: return TextFormat("+%d Attack Damage", statBonusValue);
+            case GEM_SAPPHIRE: return TextFormat("+%d Armor Rating", statBonusValue);
+            case GEM_TOPAZ: return TextFormat("+%d%% Crit Chance", statBonusValue);
+            case GEM_EMERALD: return TextFormat("+%d Health Steal", statBonusValue);
+            default: return "Empty Socket";
+        }
+    }
+};
+
+struct GearItem {
+    std::string id;
+    std::string name;
+    std::string setId; // Empty string if not part of a set
+    int slotType;      // 0: Weapon, 1: Armor, 2: Helmet, 3: Accessory
+    int rarity;        // 0: Common, 1: Rare, 2: Legendary, 3: Set Item
+    int maxSockets = 2;
+    std::vector<SocketableGem> sockets;
+};
+
+struct SetBonusTier {
+    int requiredPieces;
+    std::string description;
+    float statMultiplier;
+    bool isActive;
+};
+
+struct GearSetProfile {
+    std::string setId;
+    std::string setName;
+    Color themeColor;
+    std::vector<SetBonusTier> tiers;
+};
+
+class SetAndGemCraftingManager {
+public:
+    std::unordered_map<std::string, GearSetProfile> gearSets;
+    bool isCraftingUIOpen = false;
+
+    // Crafting Slot Selection
+    int selectedEquippedSlot = 0;
+    int selectedInventoryGemIndex = 0;
+
+    void InitSetProfiles() {
+        gearSets.clear();
+
+        // 1. Infernal Pyromancer Set
+        GearSetProfile pyromancer;
+        pyromancer.setId = "set_pyro";
+        pyromancer.setName = "Infernal Pyromancer";
+        pyromancer.themeColor = ORANGE;
+        pyromancer.tiers = {
+            { 2, "2 Pieces: +20% Fire Damage & Fire Resistance.", 0.20f, false },
+            { 4, "4 Pieces: Finisher strikes ignite a burning flame aura dealing 40 DPS.", 1.0f, false }
+        };
+
+        // 2. Glacial Warden Set
+        GearSetProfile warden;
+        warden.setId = "set_glacial";
+        warden.setName = "Glacial Warden";
+        warden.themeColor = SKYBLUE;
+        warden.tiers = {
+            { 2, "2 Pieces: +15% Armor & +50 Max Health.", 0.15f, false },
+            { 4, "4 Pieces: Taking damage releases a freezing frost nova shockwave.", 1.0f, false }
+        };
+
+        gearSets[pyromancer.setId] = pyromancer;
+        gearSets[warden.setId] = warden;
+    }
+
+    void EvaluateActiveSetBonuses(const std::vector<GearItem>& equippedGear) {
+        // Count equipped pieces per set
+        std::unordered_map<std::string, int> setCounts;
+        for (const auto& item : equippedGear) {
+            if (!item.setId.empty()) {
+                setCounts[item.setId]++;
+            }
+        }
+
+        // Update active set bonus status
+        for (auto& pair : gearSets) {
+            int equippedCount = setCounts[pair.first];
+            for (auto& tier : pair.second.tiers) {
+                tier.isActive = (equippedCount >= tier.requiredPieces);
+            }
+        }
+    }
+
+    bool InsertGemIntoItem(GearItem& item, SocketableGem gem) {
+        if ((int)item.sockets.size() < item.maxSockets) {
+            item.sockets.push_back(gem);
+            return true;
+        }
+        return false;
+    }
+
+    bool UnsocketGems(GearItem& item, std::vector<SocketableGem>& outGemInventory) {
+        if (item.sockets.empty()) return false;
+        for (const auto& g : item.sockets) {
+            outGemInventory.push_back(g);
+        }
+        item.sockets.clear();
+        return true;
+    }
+
+    bool FuseGems(std::vector<SocketableGem>& inventory, GemType type, GemTier tier) {
+        int count = 0;
+        std::vector<int> indicesToRemove;
+
+        for (size_t i = 0; i < inventory.size(); i++) {
+            if (inventory[i].type == type && inventory[i].tier == tier) {
+                indicesToRemove.push_back(i);
+                count++;
+                if (count == 3) break; // Need 3 matching gems to fuse
+            }
+        }
+
+        if (count < 3) return false;
+
+        // Erase 3 lower tier gems from back to front
+        for (int i = (int)indicesToRemove.size() - 1; i >= 0; i--) {
+            inventory.erase(inventory.begin() + indicesToRemove[i]);
+        }
+
+        // Add 1 upgraded higher tier gem
+        GemTier newTier = (tier == GEM_TIER_CHIPPED) ? GEM_TIER_FLAWLESS : GEM_TIER_ROYAL;
+        int newBonus = (newTier == GEM_TIER_FLAWLESS) ? 15 : 35;
+        std::string newName = (newTier == GEM_TIER_FLAWLESS) ? "Flawless Gem" : "Royal Gem";
+
+        inventory.push_back({ type, newTier, newName, newBonus });
+        return true;
+    }
+
+    void DrawSetBonusesHUD(int screenW) {
+        int startX = 20;
+        int startY = 150;
+
+        for (const auto& pair : gearSets) {
+            const auto& setProf = pair.second;
+            bool anyActive = false;
+            for (const auto& t : setProf.tiers) {
+                if (t.isActive) anyActive = true;
+            }
+
+            if (!anyActive) continue;
+
+            DrawRectangle(startX, startY, 260, 60, ColorAlpha(BLACK, 0.8f));
+            DrawRectangleLines(startX, startY, 260, 60, setProf.themeColor);
+
+            DrawText(setProf.setName.c_str(), startX + 10, startY + 8, 12, setProf.themeColor);
+
+            int textY = startY + 26;
+            for (const auto& t : setProf.tiers) {
+                if (t.isActive) {
+                    DrawText(TextFormat("• %s", t.description.c_str()), startX + 10, textY, 9, GREEN);
+                    textY += 14;
+                }
+            }
+
+            startY += 70;
+        }
+    }
+
+    void DrawGemCraftingVendorUI(int screenW, int screenH, std::vector<GearItem>& equippedGear, std::vector<SocketableGem>& gemInventory, Vector2 mousePos) {
+        if (!isCraftingUIOpen) return;
+
+        int uiW = 700, uiH = 440;
+        int uiX = (screenW - uiW) / 2;
+        int uiY = (screenH - uiH) / 2;
+
+        DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.65f));
+        DrawRectangle(uiX, uiY, uiW, uiH, GetColor(0x12121DFF));
+        DrawRectangleLines(uiX, uiY, uiW, uiH, GOLD);
+
+        // Header
+        DrawRectangle(uiX, uiY, uiW, 40, GetColor(0x1B1B2AFF));
+        DrawText("JEWELER & GEM FORGE", uiX + 20, uiY + 12, 16, GOLD);
+        DrawText("[ESC] Close", uiX + uiW - 90, uiY + 14, 11, LIGHTGRAY);
+
+        // Equipped Gear Section (Left Column)
+        DrawText("EQUIPPED GEAR SOCKETS", uiX + 25, uiY + 55, 12, SKYBLUE);
+        int gearY = uiY + 80;
+
+        for (size_t i = 0; i < equippedGear.size(); i++) {
+            auto& item = equippedGear[i];
+            Rectangle gearRec = { (float)uiX + 25, (float)gearY, 300.0f, 65.0f };
+            bool isSelected = (selectedEquippedSlot == (int)i);
+
+            DrawRectangleRec(gearRec, isSelected ? GetColor(0x28283CFF) : GetColor(0x181824FF));
+            DrawRectangleLinesEx(gearRec, 1.0f, isSelected ? GOLD : DARKGRAY);
+
+            DrawText(item.name.c_str(), (int)gearRec.x + 10, (int)gearRec.y + 8, 12, WHITE);
+            DrawText(TextFormat("Sockets: %d/%d", (int)item.sockets.size(), item.maxSockets), (int)gearRec.x + 10, (int)gearRec.y + 26, 10, GRAY);
+
+            // Socket Icons
+            for (int s = 0; s < item.maxSockets; s++) {
+                int sockX = (int)gearRec.x + 180 + s * 24;
+                int sockY = (int)gearRec.y + 22;
+
+                if (s < (int)item.sockets.size()) {
+                    Color gemCol = (item.sockets[s].type == GEM_RUBY) ? RED : ((item.sockets[s].type == GEM_SAPPHIRE) ? SKYBLUE : GOLD);
+                    DrawCircle(sockX, sockY, 8, gemCol);
+                } else {
+                    DrawCircleLines(sockX, sockY, 8, DARKGRAY);
+                }
+            }
+
+            if (CheckCollisionPointRec(mousePos, gearRec) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                selectedEquippedSlot = (int)i;
+            }
+
+            gearY += 75;
+        }
+
+        // Gem Inventory & Action Section (Right Column)
+        DrawText("GEM INVENTORY & FORGE", uiX + 350, uiY + 55, 12, GOLD);
+        int gemY = uiY + 80;
+
+        for (size_t i = 0; i < gemInventory.size(); i++) {
+            const auto& gem = gemInventory[i];
+            Rectangle gemRec = { (float)uiX + 350, (float)gemY, 320.0f, 32.0f };
+            bool isHovered = CheckCollisionPointRec(mousePos, gemRec);
+
+            Color gemCol = (gem.type == GEM_RUBY) ? RED : ((gem.type == GEM_SAPPHIRE) ? SKYBLUE : GOLD);
+
+            DrawRectangleRec(gemRec, isHovered ? GetColor(0x2A2A3EFF) : GetColor(0x1A1A28FF));
+            DrawRectangleLinesEx(gemRec, 1.0f, isHovered ? gemCol : DARKGRAY);
+
+            DrawCircle((int)gemRec.x + 16, (int)gemRec.y + 16, 6, gemCol);
+            DrawText(gem.name.c_str(), (int)gemRec.x + 32, (int)gemRec.y + 10, 11, WHITE);
+            DrawText(gem.GetStatDescription().c_str(), (int)gemRec.x + 170, (int)gemRec.y + 10, 10, GREEN);
+
+            // Insert Button
+            if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !equippedGear.empty()) {
+                if (InsertGemIntoItem(equippedGear[selectedEquippedSlot], gem)) {
+                    gemInventory.erase(gemInventory.begin() + i);
+                    break;
+                }
+            }
+
+            gemY += 38;
+        }
+
+        // Unsocket & Fuse Buttons
+        Rectangle unsocketBtn = { (float)uiX + 25, (float)uiY + uiH - 50, 140.0f, 32.0f };
+        bool unsocketHover = CheckCollisionPointRec(mousePos, unsocketBtn);
+        DrawRectangleRec(unsocketBtn, unsocketHover ? RED : GetColor(0x281818FF));
+        DrawRectangleLinesEx(unsocketBtn, 1.0f, RED);
+        DrawText("Unsocket All", (int)unsocketBtn.x + 22, (int)unsocketBtn.y + 10, 11, WHITE);
+
+        if (unsocketHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !equippedGear.empty()) {
+            UnsocketGems(equippedGear[selectedEquippedSlot], gemInventory);
+        }
+
+        Rectangle fuseBtn = { (float)uiX + 180, (float)uiY + uiH - 50, 140.0f, 32.0f };
+        bool fuseHover = CheckCollisionPointRec(mousePos, fuseBtn);
+        DrawRectangleRec(fuseBtn, fuseHover ? GOLD : GetColor(0x282818FF));
+        DrawRectangleLinesEx(fuseBtn, 1.0f, GOLD);
+        DrawText("Fuse 3 Gems", (int)fuseBtn.x + 25, (int)fuseBtn.y + 10, 11, WHITE);
+
+        if (fuseHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            FuseGems(gemInventory, GEM_RUBY, GEM_TIER_CHIPPED);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+#include "WasmWebManager.h"
+#include "QuestAndBountySystem.h"
+#include "ProceduralBossAndMutatorSystem.h"
+#include "SetAndGemCraftingSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Set Bonuses & Gem Crafting");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+    AudioSynthesizerManager synthAudio;
+    WasmWebManager wasmWeb;
+    QuestAndBountyManager questMgr;
+    ProceduralBossAndMutatorManager proceduralBossMgr;
+    SetAndGemCraftingManager setGemMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+    synthAudio.Init();
+    wasmWeb.Init();
+    questMgr.InitQuests();
+    setGemMgr.InitSetProfiles();
+
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    // Sample Equipped Set Gear for Testing
+    std::vector<GearItem> equippedGear = {
+        { "item_1", "Pyromancer Helm", "set_pyro", 2, 3, 2, {} },
+        { "item_2", "Pyromancer Chest", "set_pyro", 1, 3, 2, {} }
+    };
+
+    // Sample Inventory Gems
+    std::vector<SocketableGem> gemInventory = {
+        { GEM_RUBY, GEM_TIER_CHIPPED, "Chipped Ruby", 5 },
+        { GEM_RUBY, GEM_TIER_CHIPPED, "Chipped Ruby", 5 },
+        { GEM_RUBY, GEM_TIER_CHIPPED, "Chipped Ruby", 5 },
+        { GEM_SAPPHIRE, GEM_TIER_FLAWLESS, "Flawless Sapphire", 15 }
+    };
+
+    auto GenerateFloorContent = [&]() {
+        dungeon.Generate();
+        minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+        eliteMgr.GenerateMinibossRoom(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+        std::vector<Vector2> floorTiles;
+        for (int r = 0; r < DUNGEON_ROWS; r++) {
+            for (int c = 0; c < DUNGEON_COLS; c++) {
+                if (dungeon.grid[r][c] == TILE_FLOOR) {
+                    floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+                }
+            }
+        }
+
+        BiomeType bType = (floorMgr.currentFloor % 2 == 0) ? BIOME_ICE_VAULTS : BIOME_LAVA_CAVERNS;
+        biomeMgr.PopulateDungeonFeatures(floorTiles, bType);
+
+        if (floorTiles.size() > 50) {
+            floorMgr.SpawnFloorExits(floorTiles[15], floorTiles[45], floorMgr.currentFloor + 3);
+            player.pos = floorTiles[0];
+            proceduralBossMgr.bossPos = floorTiles[30];
+        }
+
+        proceduralBossMgr.RollFloorMutator();
+        proceduralBossMgr.GenerateProceduralBoss(floorMgr.currentFloor);
+        questMgr.UpdateObjectiveProgress(OBJ_REACH_FLOOR, 1, floorMgr.currentFloor);
+    };
+
+    GenerateFloorContent();
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+        synthAudio.Update(player.pos);
+
+        // Open Crafting Vendor UI with Key 'J'
+        if (IsKeyPressed(KEY_J)) {
+            setGemMgr.isCraftingUIOpen = !setGemMgr.isCraftingUIOpen;
+        }
+
+        // Evaluate active set bonuses
+        setGemMgr.EvaluateActiveSetBonuses(equippedGear);
+
+        if (IsKeyPressed(KEY_C)) {
+            classMgr.isClassSelectionOpen = !classMgr.isClassSelectionOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (!classMgr.isClassSelectionOpen && !metaMgr.isUIOpen && !talentTree.isOpen && !questMgr.isDialogueOpen && !setGemMgr.isCraftingUIOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+                synthAudio.PlaySound2D(SFX_SWORD_SWING, 0.6f);
+
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                    if (isCrit) {
+                        totalDmg *= 1.75f;
+                        synthAudio.PlaySound2D(SFX_CRITICAL_HIT, 0.9f);
+                    }
+
+                    combatUIMgr.SpawnDamageText(classMgr.activeHitbox.center, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+
+                    if (CheckCollisionCircles(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, proceduralBossMgr.bossPos, proceduralBossMgr.radius)) {
+                        proceduralBossMgr.hp -= totalDmg;
+                    }
+
+                    eliteMgr.ApplyDamageToElites(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, totalDmg, classMgr.activeHitbox.knockbackForce, player.pos, player.health, particles);
+                }
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+                synthAudio.PlaySound2D(SFX_STATUS_POP, 0.8f);
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, proceduralBossMgr.hp);
+
+        bool shouldRegenFloor = false;
+        if (portals.currentScene == SCENE_DUNGEON) {
+            floorMgr.Update(dt, player.pos, shouldRegenFloor);
+            if (shouldRegenFloor) {
+                GenerateFloorContent();
+                floorMgr.isTransitioning = false;
+            }
+        }
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen || classMgr.isClassSelectionOpen || questMgr.isDialogueOpen || setGemMgr.isCraftingUIOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen && !floorMgr.isTransitioning) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                biomeMgr.Update(dt, player.pos, player.health);
+                eliteMgr.Update(dt, player.pos, player.health, particles);
+                proceduralBossMgr.Update(dt, player.pos, player.health, particles);
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, proceduralBossMgr.bossPos, portals.currentScene == SCENE_DUNGEON && proceduralBossMgr.hp > 0, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    floorMgr.DrawWorldSpace();
+                    biomeMgr.DrawTrapsAndShrines();
+                    eliteMgr.DrawInWorldSpace();
+                    proceduralBossMgr.DrawInWorldSpace();
+                    combatMgr.DrawTelegraphs();
+                }
+
+                classMgr.DrawAttackVisuals(player.pos);
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : biomeMgr.GetBiomeTheme(biomeMgr.currentBiome).ambientLightColor);
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        questMgr.DrawQuestTrackerHUD(screenW);
+        setGemMgr.DrawSetBonusesHUD(screenW); // Active Set Bonus Banner
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            biomeMgr.DrawBuffHUD();
+            floorMgr.DrawFloorHUD(screenW);
+            proceduralBossMgr.DrawBossAndMutatorHUD(screenW);
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, proceduralBossMgr.bossPos, proceduralBossMgr.hp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+        classMgr.DrawClassSelectionMenu(screenW, screenH, mousePos);
+        questMgr.DrawDialogueUI(screenW, screenH, player.gold, metaMgr.bossSouls);
+        setGemMgr.DrawGemCraftingVendorUI(screenW, screenH, equippedGear, gemInventory, mousePos); // Crafting Vendor Interface
+        floorMgr.DrawTransitionOverlay(screenW, screenH);
+
+        DrawText("[J] Gem Forge & Socketing", screenW - 220, 15, 11, GOLD);
+
+        EndDrawing();
+    }
+
+    synthAudio.Unload();
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
