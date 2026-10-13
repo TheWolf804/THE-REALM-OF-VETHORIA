@@ -1,0 +1,484 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "ParticleEngine.h"
+#include <vector>
+#include <string>
+
+enum UndeadType {
+    UNDEAD_CRYPT_STALKER = 0,
+    UNDEAD_NECROTIC_ABOMINATION
+};
+
+struct UndeadEnemy {
+    int id;
+    Vector2 pos;
+    float hp;
+    float maxHp;
+    float radius;
+    float speed;
+    UndeadType type;
+    Color color;
+};
+
+struct PoisonSludgePool {
+    Vector2 pos;
+    float radius;
+    float pulseTimer;
+};
+
+class Act2SunkenCryptsManager {
+public:
+    std::vector<PoisonSludgePool> sludgePools;
+    std::vector<UndeadEnemy> undeadMobs;
+
+    // Act II Boss: Malgor, Lord of Decay
+    std::string bossName = "Malgor, Lord of Decay";
+    Vector2 bossPos;
+    float bossHp = 1800.0f;
+    float bossMaxHp = 1800.0f;
+    float bossRadius = 40.0f;
+    float bossAttackTimer = 0.0f;
+    bool bossActive = false;
+
+    // Player Status Effects
+    float poisonTimer = 0.0f;
+    float poisonTickTimer = 0.0f;
+
+    void PopulateSunkenCrypts(const std::vector<Vector2>& floorTiles, Vector2 bossSpawnTile) {
+        sludgePools.clear();
+        undeadMobs.clear();
+
+        // 1. Spawn Poison Sludge Hazard Pools
+        int numPools = (int)floorTiles.size() / 15;
+        for (int i = 0; i < numPools; i++) {
+            int idx = GetRandomValue(0, (int)floorTiles.size() - 1);
+            sludgePools.push_back({ floorTiles[idx], (float)GetRandomValue(35, 65), (float)GetRandomValue(0, 100) * 0.1f });
+        }
+
+        // 2. Spawn Undead Enemy Mobs
+        int numMobs = (int)floorTiles.size() / 12;
+        for (int i = 0; i < numMobs; i++) {
+            int idx = GetRandomValue(0, (int)floorTiles.size() - 1);
+            bool isAbom = (GetRandomValue(0, 100) < 30); // 30% chance for heavy Abomination
+
+            UndeadEnemy mob;
+            mob.id = GetRandomValue(2000, 8999);
+            mob.pos = floorTiles[idx];
+            mob.type = isAbom ? UNDEAD_NECROTIC_ABOMINATION : UNDEAD_CRYPT_STALKER;
+            mob.hp = isAbom ? 240.0f : 110.0f;
+            mob.maxHp = mob.hp;
+            mob.radius = isAbom ? 24.0f : 16.0f;
+            mob.speed = isAbom ? 65.0f : 130.0f;
+            mob.color = isAbom ? DARKGREEN : LIME;
+            undeadMobs.push_back(mob);
+        }
+
+        // 3. Initialize Malgor
+        bossPos = bossSpawnTile;
+        bossHp = 1800.0f;
+        bossMaxHp = 1800.0f;
+        bossActive = true;
+        bossAttackTimer = 0.0f;
+    }
+
+    void Update(float dt, Vector2 playerPos, float& playerHp, ParticleEngine& particles) {
+        // 1. Poison Sludge Pool Collision Check
+        for (auto& pool : sludgePools) {
+            pool.pulseTimer += dt * 3.0f;
+            if (CheckCollisionCircles(playerPos, 14.0f, pool.pos, pool.radius)) {
+                poisonTimer = 3.0f; // Inflict 3-second poison DoT
+            }
+        }
+
+        // Process Poison DoT Ticks on Player
+        if (poisonTimer > 0.0f) {
+            poisonTimer -= dt;
+            poisonTickTimer += dt;
+            if (poisonTickTimer >= 0.5f) { // Damage tick every 0.5s
+                playerHp -= 6.0f;
+                poisonTickTimer = 0.0f;
+                particles.SpawnParticle(playerPos, { (float)GetRandomValue(-15, 15), -35.0f }, GREEN, 0.35f, 3.0f);
+            }
+        }
+
+        // 2. Update Undead Mobs
+        for (auto it = undeadMobs.begin(); it != undeadMobs.end();) {
+            Vector2 toPlayer = Vector2Subtract(playerPos, it->pos);
+            float dist = Vector2Length(toPlayer);
+
+            if (dist < 320.0f && dist > 0.1f) {
+                Vector2 moveDir = Vector2Scale(Vector2Normalize(toPlayer), it->speed * dt);
+                it->pos = Vector2Add(it->pos, moveDir);
+
+                // Melee Strike
+                if (dist < (it->radius + 14.0f)) {
+                    playerHp -= (it->type == UNDEAD_NECROTIC_ABOMINATION) ? 18.0f * dt : 10.0f * dt;
+                }
+            }
+
+            if (it->hp <= 0.0f) {
+                // Death Poison Burst
+                for (int p = 0; p < 12; p++) {
+                    float angle = (float)p * (2.0f * PI / 12.0f);
+                    particles.SpawnParticle(it->pos, { cosf(angle) * 80.0f, sinf(angle) * 80.0f }, LIME, 0.4f, 4.0f);
+                }
+                it = undeadMobs.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        // 3. Update Boss: Malgor, Lord of Decay
+        if (bossActive && bossHp > 0.0f) {
+            bossAttackTimer += dt;
+
+            // Malgor Poison Shockwave & Minion Summon Loop
+            if (bossAttackTimer >= 3.0f) {
+                bossAttackTimer = 0.0f;
+
+                // Fire Ring of Poison Missiles
+                for (int i = 0; i < 24; i++) {
+                    float angle = (float)i * (2.0f * PI / 24.0f);
+                    Vector2 dir = { cosf(angle), sinf(angle) };
+                    particles.SpawnParticle(bossPos, Vector2Scale(dir, 180.0f), GREEN, 0.6f, 6.0f);
+                }
+
+                // Summon Crypt Stalker Minion if HP below 50%
+                if (bossHp < bossMaxHp * 0.5f && undeadMobs.size() < 15) {
+                    UndeadEnemy minion;
+                    minion.id = GetRandomValue(9000, 9999);
+                    minion.pos = Vector2Add(bossPos, { (float)GetRandomValue(-40, 40), (float)GetRandomValue(-40, 40) });
+                    minion.type = UNDEAD_CRYPT_STALKER;
+                    minion.hp = 80.0f;
+                    minion.maxHp = 80.0f;
+                    minion.radius = 16.0f;
+                    minion.speed = 140.0f;
+                    minion.color = LIME;
+                    undeadMobs.push_back(minion);
+                }
+            }
+        }
+    }
+
+    void ApplyDamageToUndeadAndBoss(Vector2 hitCenter, float hitRadius, float damage, Vector2 attackOrigin, ParticleEngine& particles) {
+        // Hit Undead Mobs
+        for (auto& mob : undeadMobs) {
+            if (CheckCollisionCircles(hitCenter, hitRadius, mob.pos, mob.radius)) {
+                mob.hp -= damage;
+                Vector2 kbDir = Vector2Normalize(Vector2Subtract(mob.pos, attackOrigin));
+                mob.pos = Vector2Add(mob.pos, Vector2Scale(kbDir, 12.0f));
+
+                for (int i = 0; i < 5; i++) {
+                    particles.SpawnParticle(mob.pos, { (float)GetRandomValue(-50, 50), (float)GetRandomValue(-50, 50) }, LIME, 0.2f, 3.0f);
+                }
+            }
+        }
+
+        // Hit Malgor
+        if (bossActive && bossHp > 0.0f) {
+            if (CheckCollisionCircles(hitCenter, hitRadius, bossPos, bossRadius)) {
+                bossHp -= damage;
+                for (int i = 0; i < 8; i++) {
+                    particles.SpawnParticle(bossPos, { (float)GetRandomValue(-80, 80), (float)GetRandomValue(-80, 80) }, GREEN, 0.25f, 4.0f);
+                }
+            }
+        }
+    }
+
+    void DrawInWorldSpace() {
+        // Render Poison Sludge Hazard Pools
+        for (const auto& pool : sludgePools) {
+            float pulse = sinf(pool.pulseTimer) * 4.0f;
+            DrawCircleV(pool.pos, pool.radius + pulse, ColorAlpha(DARKGREEN, 0.45f));
+            DrawCircleLines((int)pool.pos.x, (int)pool.pos.y, pool.radius + pulse, LIME);
+        }
+
+        // Render Undead Mobs
+        for (const auto& mob : undeadMobs) {
+            DrawCircleV(mob.pos, mob.radius, mob.color);
+            DrawCircleLines((int)mob.pos.x, (int)mob.pos.y, mob.radius + 2.0f, GREEN);
+
+            // HP Bar
+            float ratio = mob.hp / mob.maxHp;
+            DrawRectangle((int)mob.pos.x - 14, (int)mob.pos.y - (int)mob.radius - 8, 28, 4, BLACK);
+            DrawRectangle((int)mob.pos.x - 14, (int)mob.pos.y - (int)mob.radius - 8, (int)(28.0f * ratio), 4, GREEN);
+        }
+
+        // Render Malgor, Lord of Decay
+        if (bossActive && bossHp > 0.0f) {
+            DrawCircleV(bossPos, bossRadius, GetColor(0x113B11FF));
+            DrawCircleLines((int)bossPos.x, (int)bossPos.y, bossRadius + 4.0f, GREEN);
+
+            float pulse = sinf(GetTime() * 5.0f) * 6.0f;
+            DrawCircleLines((int)bossPos.x, (int)bossPos.y, bossRadius + 12.0f + pulse, ColorAlpha(LIME, 0.7f));
+        }
+    }
+
+    void DrawAct2HUD(int screenW) {
+        // Poison Status Debuff Overlay Icon
+        if (poisonTimer > 0.0f) {
+            DrawRectangle(20, 115, 120, 24, ColorAlpha(BLACK, 0.8f));
+            DrawRectangleLines(20, 115, 120, 24, GREEN);
+            DrawText(TextFormat("POISONED! (%.1fs)", poisonTimer), 28, 121, 10, GREEN);
+        }
+
+        // Malgor Boss Health Bar
+        if (bossActive && bossHp > 0.0f) {
+            int barW = 500, barH = 22;
+            int barX = (screenW - barW) / 2;
+            int barY = 55;
+
+            DrawRectangle(barX, barY, barW, barH, ColorAlpha(BLACK, 0.85f));
+            float hpRatio = bossHp / bossMaxHp;
+            DrawRectangle(barX, barY, (int)(barW * hpRatio), barH, DARKGREEN);
+            DrawRectangleLines(barX, barY, barW, barH, GREEN);
+
+            DrawText(bossName.c_str(), barX + 10, barY - 18, 14, GREEN);
+            DrawText("ACT II BOSS", barX + barW - 90, barY - 16, 11, LIME);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+#include "WasmWebManager.h"
+#include "QuestAndBountySystem.h"
+#include "ProceduralBossAndMutatorSystem.h"
+#include "SetAndGemCraftingSystem.h"
+#include "Act2SunkenCryptsSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Act II - Sunken Crypts & Malgor");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossSystem eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+    AudioSynthesizerManager synthAudio;
+    WasmWebManager wasmWeb;
+    QuestAndBountyManager questMgr;
+    ProceduralBossAndMutatorManager proceduralBossMgr;
+    SetAndGemCraftingManager setGemMgr;
+    Act2SunkenCryptsManager act2Crypts;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+    synthAudio.Init();
+    wasmWeb.Init();
+    questMgr.InitQuests();
+    setGemMgr.InitSetProfiles();
+
+    player.gold = 500;
+    metaMgr.bossSouls = 5;
+
+    auto GenerateFloorContent = [&]() {
+        dungeon.Generate();
+        minimap.Init(DUNGEON_COLS, DUNGEON_ROWS, TILE_SIZE);
+
+        std::vector<Vector2> floorTiles;
+        for (int r = 0; r < DUNGEON_ROWS; r++) {
+            for (int c = 0; c < DUNGEON_COLS; c++) {
+                if (dungeon.grid[r][c] == TILE_FLOOR) {
+                    floorTiles.push_back({ c * (float)TILE_SIZE + TILE_SIZE / 2.0f, r * (float)TILE_SIZE + TILE_SIZE / 2.0f });
+                }
+            }
+        }
+
+        if (floorTiles.size() > 50) {
+            floorMgr.SpawnFloorExits(floorTiles[15], floorTiles[45], floorMgr.currentFloor + 3);
+            player.pos = floorTiles[0];
+            act2Crypts.PopulateSunkenCrypts(floorTiles, floorTiles[30]);
+        }
+    };
+
+    GenerateFloorContent();
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+        synthAudio.Update(player.pos);
+
+        if (IsKeyPressed(KEY_C)) {
+            classMgr.isClassSelectionOpen = !classMgr.isClassSelectionOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (!classMgr.isClassSelectionOpen && !metaMgr.isUIOpen && !talentTree.isOpen && !questMgr.isDialogueOpen && !setGemMgr.isCraftingUIOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+                synthAudio.PlaySound2D(SFX_SWORD_SWING, 0.6f);
+
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                    if (isCrit) {
+                        totalDmg *= 1.75f;
+                        synthAudio.PlaySound2D(SFX_CRITICAL_HIT, 0.9f);
+                    }
+
+                    combatUIMgr.SpawnDamageText(classMgr.activeHitbox.center, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+                    act2Crypts.ApplyDamageToUndeadAndBoss(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, totalDmg, player.pos, particles);
+                }
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+                synthAudio.PlaySound2D(SFX_STATUS_POP, 0.8f);
+            }
+        }
+
+        gearMgr.Update(dt, player.pos);
+        talentTree.Update(mousePos);
+        combatMgr.Update(dt, player.pos, player.health, act2Crypts.bossHp);
+
+        bool shouldRegenFloor = false;
+        if (portals.currentScene == SCENE_DUNGEON) {
+            floorMgr.Update(dt, player.pos, shouldRegenFloor);
+            if (shouldRegenFloor) {
+                GenerateFloorContent();
+                floorMgr.isTransitioning = false;
+            }
+        }
+
+        if (portals.currentScene == SCENE_TOWN_HUB) {
+            metaMgr.CheckNPCInteractions(player.pos);
+        }
+
+        bool menuOpen = talentTree.isOpen || gearMgr.isInventoryOpen || metaMgr.isUIOpen || classMgr.isClassSelectionOpen || questMgr.isDialogueOpen || setGemMgr.isCraftingUIOpen;
+
+        if (combatMgr.hitStopTimer <= 0.0f && !menuOpen && !floorMgr.isTransitioning) {
+            portals.Update(dt, player.pos, dungeon, particles);
+            audio.Update(dt);
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+
+            if (portals.currentScene == SCENE_DUNGEON) {
+                act2Crypts.Update(dt, player.pos, player.health, particles); // Act II Sunken Crypts Logic
+                player.Update(dt, particles);
+                minimap.Update(player.pos);
+            } else {
+                town.Update(player.pos, player.gold);
+                player.Update(dt, particles);
+            }
+
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, act2Crypts.bossPos, portals.currentScene == SCENE_DUNGEON && act2Crypts.bossHp > 0, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                if (portals.currentScene == SCENE_TOWN_HUB) {
+                    town.DrawHubWorld(player.pos);
+                    metaMgr.DrawWorldNPCs(player.pos);
+                } else {
+                    dungeon.Draw();
+                    floorMgr.DrawWorldSpace();
+                    act2Crypts.DrawInWorldSpace(); // Draw Sludge Hazards, Undead Mobs & Malgor
+                    combatMgr.DrawTelegraphs();
+                }
+
+                classMgr.DrawAttackVisuals(player.pos);
+                gearMgr.DrawWorldLootBeams();
+                portals.DrawPortalWorldSpace(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                // Dark Emerald Ambient Lighting for Sunken Crypts
+                lighting.EndLightPass(portals.currentScene == SCENE_TOWN_HUB ? GetColor(0x181822FF) : GetColor(0x0C1A12FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        combatMgr.DrawCombatHUD(screenW);
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        questMgr.DrawQuestTrackerHUD(screenW);
+        setGemMgr.DrawSetBonusesHUD(screenW);
+        
+        if (portals.currentScene == SCENE_DUNGEON) {
+            act2Crypts.DrawAct2HUD(screenW); // Poison HUD & Malgor Boss Bar
+            floorMgr.DrawFloorHUD(screenW);
+            minimap.DrawMinimapHUD(screenW, dungeon, player.pos, act2Crypts.bossPos, act2Crypts.bossHp > 0, portals.dungeonReturnPortal.pos, portals.dungeonReturnPortal.active);
+        }
+
+        talentTree.Draw(screenW, screenH, mousePos);
+        gearMgr.DrawEquipmentUI(screenW, screenH, mousePos);
+        metaMgr.DrawVendorUI(screenW, screenH, player.gold, mousePos);
+        classMgr.DrawClassSelectionMenu(screenW, screenH, mousePos);
+        questMgr.DrawDialogueUI(screenW, screenH, player.gold, metaMgr.bossSouls);
+        floorMgr.DrawTransitionOverlay(screenW, screenH);
+
+        DrawText("ACT II: THE SUNKEN CRYPTS", 20, 15, 11, LIME);
+
+        EndDrawing();
+    }
+
+    synthAudio.Unload();
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
