@@ -1,0 +1,443 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include "ParticleEngine.h"
+#include <vector>
+#include <string>
+#include <algorithm>
+
+enum CrucibleState {
+    CRUCIBLE_STATE_WAVE_ACTIVE = 0,
+    CRUCIBLE_STATE_PERK_SELECTION,
+    CRUCIBLE_STATE_GAME_OVER
+};
+
+struct CruciblePerkCard {
+    std::string id;
+    std::string title;
+    std::string description;
+    Color color;
+};
+
+struct ArenaEnemy {
+    int id;
+    Vector2 pos;
+    float hp;
+    float maxHp;
+    float speed;
+    float radius;
+    bool isElite;
+    Color color;
+};
+
+class CrucibleSurvivalManager {
+public:
+    CrucibleState currentState = CRUCIBLE_STATE_WAVE_ACTIVE;
+
+    // Wave & High Score
+    int currentWave = 1;
+    int highestWaveReached = 1;
+    int totalEnemiesKilled = 0;
+
+    // Central Relic Crystal
+    Vector2 relicPos = { 640.0f, 360.0f };
+    float relicHp = 1000.0f;
+    float relicMaxHp = 1000.0f;
+    float relicRadius = 35.0f;
+
+    // Active Wave Enemies
+    std::vector<ArenaEnemy> arenaEnemies;
+    float spawnTimer = 0.0f;
+    int enemiesRemainingToSpawn = 0;
+
+    // Active Perk Modifiers
+    float damageMultiplier = 1.0f;
+    float lifestealPercentage = 0.0f;
+    float moveSpeedBonus = 0.0f;
+    bool shockwaveOnHit = false;
+
+    // Perk Selection State
+    std::vector<CruciblePerkCard> currentOptions;
+    int selectedCardIndex = -1;
+
+    void InitCrucibleMode() {
+        currentWave = 1;
+        totalEnemiesKilled = 0;
+        relicHp = 1000.0f;
+        relicMaxHp = 1000.0f;
+        damageMultiplier = 1.0f;
+        lifestealPercentage = 0.0f;
+        moveSpeedBonus = 0.0f;
+        shockwaveOnHit = false;
+
+        StartNextWave();
+    }
+
+    void StartNextWave() {
+        currentState = CRUCIBLE_STATE_WAVE_ACTIVE;
+        arenaEnemies.clear();
+        enemiesRemainingToSpawn = 10 + currentWave * 5;
+        spawnTimer = 0.0f;
+
+        if (currentWave > highestWaveReached) {
+            highestWaveReached = currentWave;
+        }
+    }
+
+    void GeneratePerkCards() {
+        std::vector<CruciblePerkCard> pool = {
+            { "perk_dmg", "Vicious Strike", "+25% Global Damage output.", RED },
+            { "perk_life", "Vampiric Touch", "Gain 8% Lifesteal on all melee and skill hits.", PURPLE },
+            { "perk_spd", "Fleet Footwork", "+30% Movement Speed and Dash distance.", SKYBLUE },
+            { "perk_shock", "Relic Pulse", "Dealing damage triggers a kinetic shockwave.", GOLD },
+            { "perk_relic", "Fortify Relic", "Restore 400 Health to the Central Relic Crystal.", GREEN }
+        };
+
+        // Pick 3 random cards
+        std::random_shuffle(pool.begin(), pool.end());
+        currentOptions = { pool[0], pool[1], pool[2] };
+    }
+
+    void ApplySelectedPerk(int cardIndex) {
+        if (cardIndex < 0 || cardIndex >= (int)currentOptions.size()) return;
+
+        const auto& card = currentOptions[cardIndex];
+        if (card.id == "perk_dmg") damageMultiplier += 0.25f;
+        else if (card.id == "perk_life") lifestealPercentage += 0.08f;
+        else if (card.id == "perk_spd") moveSpeedBonus += 50.0f;
+        else if (card.id == "perk_shock") shockwaveOnHit = true;
+        else if (card.id == "perk_relic") {
+            relicHp = std::min(relicMaxHp, relicHp + 400.0f);
+        }
+
+        currentWave++;
+        StartNextWave();
+    }
+
+    void Update(float dt, Vector2 playerPos, float& playerHp, ParticleEngine& particles) {
+        if (currentState == CRUCIBLE_STATE_GAME_OVER) return;
+
+        if (currentState == CRUCIBLE_STATE_WAVE_ACTIVE) {
+            // Check Relic or Player Defeat
+            if (relicHp <= 0.0f || playerHp <= 0.0f) {
+                currentState = CRUCIBLE_STATE_GAME_OVER;
+                return;
+            }
+
+            // Spawning Logic
+            if (enemiesRemainingToSpawn > 0) {
+                spawnTimer += dt;
+                if (spawnTimer >= 0.8f) {
+                    spawnTimer = 0.0f;
+                    enemiesRemainingToSpawn--;
+
+                    // Spawn along perimeter
+                    float angle = (float)GetRandomValue(0, 360) * DEG2RAD;
+                    float dist = 520.0f;
+                    Vector2 spawnPos = { relicPos.x + cosf(angle) * dist, relicPos.y + sinf(angle) * dist };
+
+                    bool isElite = (GetRandomValue(0, 100) < (15 + currentWave * 2));
+                    ArenaEnemy enemy;
+                    enemy.id = GetRandomValue(1000, 9999);
+                    enemy.pos = spawnPos;
+                    enemy.isElite = isElite;
+                    enemy.hp = (isElite ? 220.0f : 80.0f) * (1.0f + currentWave * 0.15f);
+                    enemy.maxHp = enemy.hp;
+                    enemy.speed = isElite ? 85.0f : 120.0f;
+                    enemy.radius = isElite ? 22.0f : 14.0f;
+                    enemy.color = isElite ? VIOLET : RED;
+
+                    arenaEnemies.push_back(enemy);
+                }
+            }
+
+            // Update Arena Enemies
+            for (auto it = arenaEnemies.begin(); it != arenaEnemies.end();) {
+                // Decide Target: Player or Relic
+                Vector2 targetPos = (Vector2Distance(it->pos, playerPos) < Vector2Distance(it->pos, relicPos)) ? playerPos : relicPos;
+                Vector2 dir = Vector2Normalize(Vector2Subtract(targetPos, it->pos));
+
+                it->pos = Vector2Add(it->pos, Vector2Scale(dir, it->speed * dt));
+
+                // Attack Collision
+                if (CheckCollisionCircles(it->pos, it->radius, relicPos, relicRadius)) {
+                    relicHp -= (it->isElite ? 25.0f : 12.0f) * dt;
+                    particles.SpawnParticle(relicPos, { (float)GetRandomValue(-30, 30), (float)GetRandomValue(-30, 30) }, GOLD, 0.2f, 3.0f);
+                }
+                if (CheckCollisionCircles(it->pos, it->radius, playerPos, 14.0f)) {
+                    playerHp -= (it->isElite ? 20.0f : 10.0f) * dt;
+                }
+
+                if (it->hp <= 0.0f) {
+                    totalEnemiesKilled++;
+
+                    // Lifesteal Bonus
+                    if (lifestealPercentage > 0.0f) {
+                        playerHp = std::min(100.0f, playerHp + 5.0f * lifestealPercentage);
+                    }
+
+                    for (int p = 0; p < 8; p++) {
+                        particles.SpawnParticle(it->pos, { (float)GetRandomValue(-60, 60), (float)GetRandomValue(-60, 60) }, it->color, 0.3f, 4.0f);
+                    }
+                    it = arenaEnemies.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            // Check Wave Completion
+            if (enemiesRemainingToSpawn <= 0 && arenaEnemies.empty()) {
+                currentState = CRUCIBLE_STATE_PERK_SELECTION;
+                GeneratePerkCards();
+            }
+        }
+    }
+
+    void ApplyDamageToArenaEnemies(Vector2 hitCenter, float hitRadius, float baseDamage, Vector2 attackOrigin, ParticleEngine& particles) {
+        float actualDamage = baseDamage * damageMultiplier;
+
+        for (auto& enemy : arenaEnemies) {
+            if (CheckCollisionCircles(hitCenter, hitRadius, enemy.pos, enemy.radius)) {
+                enemy.hp -= actualDamage;
+
+                Vector2 kbDir = Vector2Normalize(Vector2Subtract(enemy.pos, attackOrigin));
+                enemy.pos = Vector2Add(enemy.pos, Vector2Scale(kbDir, 14.0f));
+
+                if (shockwaveOnHit) {
+                    for (int i = 0; i < 6; i++) {
+                        float angle = (float)i * (2.0f * PI / 6.0f);
+                        particles.SpawnParticle(enemy.pos, { cosf(angle) * 90.0f, sinf(angle) * 90.0f }, GOLD, 0.25f, 4.0f);
+                    }
+                }
+            }
+        }
+    }
+
+    void DrawInWorldSpace() {
+        // Draw Central Relic Crystal
+        float pulse = sinf(GetTime() * 4.0f) * 4.0f;
+        DrawCircleV(relicPos, relicRadius + pulse, ColorAlpha(GOLD, 0.3f));
+        DrawCircleV(relicPos, relicRadius, GetColor(0x3A2A08FF));
+        DrawCircleLines((int)relicPos.x, (int)relicPos.y, relicRadius + 2.0f, GOLD);
+
+        // Relic Health Bar
+        float rRatio = relicHp / relicMaxHp;
+        DrawRectangle((int)relicPos.x - 30, (int)relicPos.y - (int)relicRadius - 12, 60, 6, BLACK);
+        DrawRectangle((int)relicPos.x - 30, (int)relicPos.y - (int)relicRadius - 12, (int)(60.0f * rRatio), 6, GOLD);
+
+        // Draw Arena Enemies
+        for (const auto& enemy : arenaEnemies) {
+            DrawCircleV(enemy.pos, enemy.radius, enemy.color);
+            DrawCircleLines((int)enemy.pos.x, (int)enemy.pos.y, enemy.radius + 2.0f, enemy.isElite ? YELLOW : RED);
+        }
+    }
+
+    void DrawCrucibleHUD(int screenW, int screenH, Vector2 mousePos) {
+        // Top Wave Header
+        DrawRectangle((screenW - 280) / 2, 10, 280, 40, ColorAlpha(BLACK, 0.85f));
+        DrawRectangleLines((screenW - 280) / 2, 10, 280, 40, GOLD);
+
+        DrawText(TextFormat("CRUCIBLE WAVE %d", currentWave), (screenW - MeasureText(TextFormat("CRUCIBLE WAVE %d", currentWave), 14)) / 2, 16, 14, GOLD);
+        DrawText(TextFormat("High Score: Wave %d | Kills: %d", highestWaveReached, totalEnemiesKilled), (screenW - MeasureText(TextFormat("High Score: Wave %d | Kills: %d", highestWaveReached, totalEnemiesKilled), 10)) / 2, 34, 10, LIGHTGRAY);
+
+        // Roguelike Perk Cards Overlay
+        if (currentState == CRUCIBLE_STATE_PERK_SELECTION) {
+            DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.75f));
+
+            DrawText("CHOOSE A CRUCIBLE PERK", (screenW - MeasureText("CHOOSE A CRUCIBLE PERK", 20)) / 2, screenH / 2 - 140, 20, GOLD);
+
+            int cardW = 200, cardH = 220;
+            int totalW = 3 * cardW + 2 * 30;
+            int startX = (screenW - totalW) / 2;
+            int cardY = (screenH - cardH) / 2;
+
+            for (size_t i = 0; i < currentOptions.size(); i++) {
+                Rectangle cardRec = { (float)(startX + i * (cardW + 30)), (float)cardY, (float)cardW, (float)cardH };
+                bool isHovered = CheckCollisionPointRec(mousePos, cardRec);
+
+                DrawRectangleRec(cardRec, isHovered ? GetColor(0x28283CFF) : GetColor(0x181824FF));
+                DrawRectangleLinesEx(cardRec, 2.0f, isHovered ? GOLD : currentOptions[i].color);
+
+                DrawText(currentOptions[i].title.c_str(), (int)cardRec.x + 15, (int)cardRec.y + 20, 13, currentOptions[i].color);
+                DrawText(currentOptions[i].description.c_str(), (int)cardRec.x + 15, (int)cardRec.y + 60, 11, LIGHTGRAY);
+
+                if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    ApplySelectedPerk((int)i);
+                    break;
+                }
+            }
+        } else if (currentState == CRUCIBLE_STATE_GAME_OVER) {
+            DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.85f));
+            DrawText("THE RELIC HAS FALLEN", (screenW - MeasureText("THE RELIC HAS FALLEN", 24)) / 2, screenH / 2 - 40, 24, RED);
+            DrawText(TextFormat("You Survived Until Wave %d | Total Kills: %d", currentWave, totalEnemiesKilled), (screenW - MeasureText(TextFormat("You Survived Until Wave %d | Total Kills: %d", currentWave, totalEnemiesKilled), 14)) / 2, screenH / 2 + 10, 14, WHITE);
+            DrawText("Press [R] to Restart The Crucible", (screenW - MeasureText("Press [R] to Restart The Crucible", 12)) / 2, screenH / 2 + 50, 12, GOLD);
+
+            if (IsKeyPressed(KEY_R)) {
+                InitCrucibleMode();
+            }
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+#include "WasmWebManager.h"
+#include "QuestAndBountySystem.h"
+#include "ProceduralBossAndMutatorSystem.h"
+#include "SetAndGemCraftingSystem.h"
+#include "Act2SunkenCryptsSystem.h"
+#include "CrucibleSurvivalMode.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: The Crucible - Endless Horde Survival");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+    AudioSynthesizerManager synthAudio;
+    WasmWebManager wasmWeb;
+    QuestAndBountyManager questMgr;
+    CrucibleSurvivalManager crucibleMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+    synthAudio.Init();
+    wasmWeb.Init();
+    questMgr.InitQuests();
+    crucibleMgr.InitCrucibleMode();
+
+    player.pos = { 640.0f, 420.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+        synthAudio.Update(player.pos);
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (crucibleMgr.currentState == CRUCIBLE_STATE_WAVE_ACTIVE) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+                synthAudio.PlaySound2D(SFX_SWORD_SWING, 0.6f);
+
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                    if (isCrit) {
+                        totalDmg *= 1.75f;
+                        synthAudio.PlaySound2D(SFX_CRITICAL_HIT, 0.9f);
+                    }
+
+                    combatUIMgr.SpawnDamageText(classMgr.activeHitbox.center, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+                    crucibleMgr.ApplyDamageToArenaEnemies(classMgr.activeHitbox.center, classMgr.activeHitbox.radius, totalDmg, player.pos, particles);
+                }
+            }
+
+            if (IsKeyPressed(KEY_Q) || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_WEST)) {
+                classMgr.TriggerActiveAbility(player.pos, particles);
+                synthAudio.PlaySound2D(SFX_STATUS_POP, 0.8f);
+            }
+        }
+
+        if (crucibleMgr.currentState == CRUCIBLE_STATE_WAVE_ACTIVE) {
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                float currentSpeed = prof.moveSpeed + crucibleMgr.moveSpeedBonus;
+                player.pos.x += input.moveInput.x * currentSpeed * dt;
+                player.pos.y += input.moveInput.y * currentSpeed * dt;
+            }
+
+            crucibleMgr.Update(dt, player.pos, player.health, particles);
+            player.Update(dt, particles);
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, crucibleMgr.relicPos, true, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                // Draw Crucible Arena Floor
+                DrawRectangle(200, 200, 880, 520, GetColor(0x12121CFF));
+                DrawRectangleLines(200, 200, 880, 520, GOLD);
+
+                crucibleMgr.DrawInWorldSpace();
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.DrawLight(crucibleMgr.relicPos, 300.0f, GOLD, 0.9f);
+                lighting.EndLightPass(GetColor(0x101018FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        crucibleMgr.DrawCrucibleHUD(screenW, screenH, mousePos);
+
+        EndDrawing();
+    }
+
+    synthAudio.Unload();
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
