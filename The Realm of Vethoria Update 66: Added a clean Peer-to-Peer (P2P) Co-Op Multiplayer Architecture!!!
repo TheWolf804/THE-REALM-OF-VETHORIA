@@ -1,0 +1,420 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <cstring>
+#include <cstdint>
+
+enum NetMessageType : uint8_t {
+    NET_MSG_CONNECT_REQ = 1,
+    NET_MSG_CONNECT_ACK,
+    NET_MSG_PLAYER_INPUT,
+    NET_MSG_WORLD_SNAPSHOT,
+    NET_MSG_ATTACK_EVENT,
+    NET_MSG_DISCONNECT
+};
+
+enum NetRole {
+    NET_ROLE_SINGLEPLAYER = 0,
+    NET_ROLE_HOST,
+    NET_ROLE_CLIENT
+};
+
+// Compact Binary Packet Structures (Packed to prevent padding alignment issues)
+#pragma pack(push, 1)
+
+struct NetHeader {
+    uint8_t msgType;
+    uint32_t sequence;
+    uint8_t senderId;
+};
+
+struct PlayerStatePacket {
+    uint8_t playerId;
+    Vector2 pos;
+    Vector2 moveInput;
+    uint8_t activeClass; // 0: Warrior, 1: Rogue, 2: Elementalist
+    float health;
+    float maxHealth;
+    bool isAttacking;
+    Vector2 attackDir;
+};
+
+struct WorldSnapshotPacket {
+    NetHeader header;
+    uint8_t playerCount;
+    PlayerStatePacket players[4];
+    uint32_t currentWave;
+    float relicHp;
+};
+
+struct AttackEventPacket {
+    NetHeader header;
+    uint8_t attackerId;
+    Vector2 position;
+    Vector2 direction;
+    uint8_t comboIndex;
+};
+
+#pragma pack(pop)
+
+struct RemotePlayer {
+    uint8_t id;
+    std::string name;
+    Vector2 pos;
+    Vector2 targetPos; // For smooth lerp interpolation
+    Vector2 moveDir;
+    uint8_t activeClass;
+    float health = 100.0f;
+    float maxHealth = 100.0f;
+    bool isAttacking = false;
+    Vector2 attackDir = { 1.0f, 0.0f };
+    Color themeColor = GOLD;
+};
+
+class NetworkCoOpManager {
+public:
+    NetRole role = NET_ROLE_SINGLEPLAYER;
+    uint8_t localPlayerId = 0;
+    std::string roomCode = "VETH-8821";
+    bool isLobbyUIOpen = false;
+    bool isConnected = false;
+
+    // Connected Remote Peers
+    std::vector<RemotePlayer> remotePlayers;
+
+    // Tick Timing for 20Hz Snapshot Broadcasts
+    float snapshotTimer = 0.0f;
+    const float SNAPSHOT_INTERVAL = 0.05f; // 20 updates / sec
+    uint32_t sequenceCounter = 0;
+
+    void HostRoom(const std::string& code) {
+        role = NET_ROLE_HOST;
+        localPlayerId = 1;
+        roomCode = code;
+        isConnected = true;
+        remotePlayers.clear();
+    }
+
+    void JoinRoom(const std::string& code) {
+        role = NET_ROLE_CLIENT;
+        localPlayerId = 2; // Assigned by Host in actual handshake
+        roomCode = code;
+        isConnected = true;
+        remotePlayers.clear();
+
+        // Register Host as Remote Player
+        RemotePlayer hostPlayer;
+        hostPlayer.id = 1;
+        hostPlayer.name = "Host (Player 1)";
+        hostPlayer.pos = { 600.0f, 360.0f };
+        hostPlayer.targetPos = hostPlayer.pos;
+        hostPlayer.themeColor = RED;
+        remotePlayers.push_back(hostPlayer);
+    }
+
+    void Disconnect() {
+        role = NET_ROLE_SINGLEPLAYER;
+        isConnected = false;
+        remotePlayers.clear();
+    }
+
+    void Update(float dt, Vector2 localPos, Vector2 moveInput, float health, float maxHealth, uint8_t classIdx) {
+        if (!isConnected) return;
+
+        // Interpolate Remote Player Positions for Silky Smooth Rendering
+        for (auto& remote : remotePlayers) {
+            remote.pos = Vector2Lerp(remote.pos, remote.targetPos, 15.0f * dt);
+        }
+
+        // 20Hz Network Broadcast Pass
+        snapshotTimer += dt;
+        if (snapshotTimer >= SNAPSHOT_INTERVAL) {
+            snapshotTimer = 0.0f;
+            sequenceCounter++;
+
+            if (role == NET_ROLE_HOST) {
+                // Host constructs & sends world snapshot to all peers
+                WorldSnapshotPacket snap;
+                snap.header = { NET_MSG_WORLD_SNAPSHOT, sequenceCounter, localPlayerId };
+                snap.playerCount = 1 + (uint8_t)remotePlayers.size();
+
+                // Fill Local Host State
+                snap.players[0] = { localPlayerId, localPos, moveInput, classIdx, health, maxHealth, false, {0,0} };
+
+                // Fill Remote Peers
+                for (size_t i = 0; i < remotePlayers.size(); i++) {
+                    const auto& r = remotePlayers[i];
+                    snap.players[i + 1] = { r.id, r.pos, r.moveDir, r.activeClass, r.health, r.maxHealth, r.isAttacking, r.attackDir };
+                }
+
+                // In native socket implementation: sendto(snap)
+            } else if (role == NET_ROLE_CLIENT) {
+                // Client sends input intent packet to host
+                PlayerStatePacket myInputPacket = { localPlayerId, localPos, moveInput, classIdx, health, maxHealth, false, {0,0} };
+                // In native socket implementation: sendto(myInputPacket)
+            }
+        }
+    }
+
+    void BroadcastAttackEvent(Vector2 pos, Vector2 dir, uint8_t comboIdx) {
+        if (!isConnected) return;
+
+        AttackEventPacket pkt;
+        pkt.header = { NET_MSG_ATTACK_EVENT, ++sequenceCounter, localPlayerId };
+        pkt.attackerId = localPlayerId;
+        pkt.position = pos;
+        pkt.direction = dir;
+        pkt.comboIndex = comboIdx;
+
+        // Network Socket Send Pass
+    }
+
+    void SimulatedReceiveRemoteInput(uint8_t peerId, Vector2 newTargetPos, Vector2 moveDir) {
+        for (auto& remote : remotePlayers) {
+            if (remote.id == peerId) {
+                remote.targetPos = newTargetPos;
+                remote.moveDir = moveDir;
+                break;
+            }
+        }
+    }
+
+    void DrawRemotePlayersInWorld() {
+        if (!isConnected) return;
+
+        for (const auto& remote : remotePlayers) {
+            // Draw Remote Player Circle
+            DrawCircleV(remote.pos, 16.0f, remote.themeColor);
+            DrawCircleLines((int)remote.pos.x, (int)remote.pos.y, 18.0f, WHITE);
+
+            // Remote Player Nameplate & Health Bar
+            int nameW = MeasureText(remote.name.c_str(), 10);
+            DrawText(remote.name.c_str(), (int)remote.pos.x - nameW / 2, (int)remote.pos.y - 32, 10, WHITE);
+
+            float hpRatio = remote.health / remote.maxHealth;
+            DrawRectangle((int)remote.pos.x - 16, (int)remote.pos.y - 20, 32, 4, BLACK);
+            DrawRectangle((int)remote.pos.x - 16, (int)remote.pos.y - 20, (int)(32.0f * hpRatio), 4, GREEN);
+        }
+    }
+
+    void DrawLobbyUI(int screenW, int screenH, Vector2 mousePos) {
+        if (!isLobbyUIOpen) return;
+
+        int uiW = 500, uiH = 340;
+        int uiX = (screenW - uiW) / 2;
+        int uiY = (screenH - uiH) / 2;
+
+        DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.7f));
+        DrawRectangle(uiX, uiY, uiW, uiH, GetColor(0x141420FF));
+        DrawRectangleLines(uiX, uiY, uiW, uiH, GOLD);
+
+        DrawText("P2P CO-OP MULTIPLAYER LOBBY", uiX + 20, uiY + 15, 15, GOLD);
+
+        // Host Button
+        Rectangle hostBtn = { (float)uiX + 30, (float)uiY + 60, 210.0f, 45.0f };
+        bool hostHover = CheckCollisionPointRec(mousePos, hostBtn);
+        DrawRectangleRec(hostBtn, hostHover ? GetColor(0x282840FF) : GetColor(0x1C1C2CFF));
+        DrawRectangleLinesEx(hostBtn, 1.0f, hostHover ? GOLD : DARKGRAY);
+        DrawText("HOST ROOM", (int)hostBtn.x + 55, (int)hostBtn.y + 15, 12, WHITE);
+
+        if (hostHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            HostRoom("VETH-8821");
+        }
+
+        // Join Button
+        Rectangle joinBtn = { (float)uiX + 260, (float)uiY + 60, 210.0f, 45.0f };
+        bool joinHover = CheckCollisionPointRec(mousePos, joinBtn);
+        DrawRectangleRec(joinBtn, joinHover ? GetColor(0x282840FF) : GetColor(0x1C1C2CFF));
+        DrawRectangleLinesEx(joinBtn, 1.0f, joinHover ? SKYBLUE : DARKGRAY);
+        DrawText("JOIN ROOM", (int)joinBtn.x + 60, (int)joinBtn.y + 15, 12, WHITE);
+
+        if (joinHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            JoinRoom("VETH-8821");
+        }
+
+        // Active Status Display
+        DrawText("CURRENT STATUS:", uiX + 30, uiY + 130, 11, GRAY);
+        const char* roleStr = (role == NET_ROLE_HOST) ? "HOST" : ((role == NET_ROLE_CLIENT) ? "CLIENT" : "OFFLINE");
+        DrawText(TextFormat("Role: %s", roleStr), uiX + 30, uiY + 150, 13, isConnected ? GREEN : RED);
+        DrawText(TextFormat("Room Code: %s", roomCode.c_str()), uiX + 30, uiY + 172, 12, SKYBLUE);
+
+        DrawText(TextFormat("Connected Peers: %d / 4", isConnected ? (int)remotePlayers.size() + 1 : 0), uiX + 30, uiY + 200, 12, WHITE);
+
+        // Disconnect Button
+        if (isConnected) {
+            Rectangle dcBtn = { (float)uiX + 30, (float)uiY + 260, 140.0f, 35.0f };
+            bool dcHover = CheckCollisionPointRec(mousePos, dcBtn);
+            DrawRectangleRec(dcBtn, dcHover ? RED : GetColor(0x301818FF));
+            DrawRectangleLinesEx(dcBtn, 1.0f, RED);
+            DrawText("Disconnect", (int)dcBtn.x + 32, (int)dcBtn.y + 11, 11, WHITE);
+
+            if (dcHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Disconnect();
+            }
+        }
+
+        DrawText("[N] Close Lobby", uiX + uiW - 120, uiY + uiH - 25, 10, GRAY);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+#include "WasmWebManager.h"
+#include "QuestAndBountySystem.h"
+#include "ProceduralBossAndMutatorSystem.h"
+#include "SetAndGemCraftingSystem.h"
+#include "Act2SunkenCryptsSystem.h"
+#include "CrucibleSurvivalMode.h"
+#include "NetworkCoOpSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: P2P Co-Op Multiplayer");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+    AudioSynthesizerManager synthAudio;
+    WasmWebManager wasmWeb;
+    QuestAndBountyManager questMgr;
+    NetworkCoOpManager netMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+    synthAudio.Init();
+    wasmWeb.Init();
+    questMgr.InitQuests();
+
+    player.pos = { 640.0f, 360.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+        synthAudio.Update(player.pos);
+
+        // Toggle P2P Lobby UI with Key 'N'
+        if (IsKeyPressed(KEY_N)) {
+            netMgr.isLobbyUIOpen = !netMgr.isLobbyUIOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (!netMgr.isLobbyUIOpen) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+                synthAudio.PlaySound2D(SFX_SWORD_SWING, 0.6f);
+
+                netMgr.BroadcastAttackEvent(player.pos, aimDir, classMgr.activeHitbox.comboIndex);
+            }
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+        }
+
+        // Update Co-Op Networking Sync
+        netMgr.Update(dt, player.pos, input.moveInput, player.health, player.maxHealth, classMgr.currentClassIndex);
+        player.Update(dt, particles);
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, player.pos, false, dt);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                
+                // Draw Remote Multiplayer Peers
+                netMgr.DrawRemotePlayersInWorld();
+
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+
+        // Network Status Badge (Top Right HUD)
+        if (netMgr.isConnected) {
+            DrawRectangle(screenW - 170, 15, 150, 25, ColorAlpha(BLACK, 0.8f));
+            DrawRectangleLines(screenW - 170, 15, 150, 25, GREEN);
+            DrawText(TextFormat("P2P: %s", netMgr.roomCode.c_str()), screenW - 160, 22, 11, GREEN);
+        } else {
+            DrawText("[N] P2P Multiplayer Lobby", screenW - 200, 18, 11, GOLD);
+        }
+
+        netMgr.DrawLobbyUI(screenW, screenH, mousePos);
+
+        EndDrawing();
+    }
+
+    synthAudio.Unload();
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
