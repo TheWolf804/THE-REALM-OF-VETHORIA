@@ -1,0 +1,325 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+
+struct MonsterCodexEntry {
+    std::string name;
+    std::string biome;
+    std::string description;
+    int baseHp;
+    bool isDiscovered;
+    Color themeColor;
+};
+
+class CinematicAndPolishManager {
+public:
+    // Cinematic Intro State
+    bool isCinematicActive = false;
+    float cinematicTimer = 0.0f;
+    std::string cinematicBossTitle = "";
+    Vector2 cinematicTargetPos = { 0, 0 };
+
+    // Chromatic Aberration & Hit FX
+    float chromaticAberrationTimer = 0.0f;
+    float screenShakeTimer = 0.0f;
+    float screenShakeIntensity = 0.0f;
+
+    // Lore Codex UI State
+    bool isCodexOpen = false;
+    int selectedCodexIndex = 0;
+    std::vector<MonsterCodexEntry> codexEntries;
+
+    void InitCodex() {
+        codexEntries = {
+            { "Crypt Stalker", "Sunken Crypts", "Agile undead lurking in stagnant poison sludge pools. Attacks with envenomed claws.", 110, true, LIME },
+            { "Necrotic Abomination", "Sunken Crypts", "Massive bloated corpse pulsating with toxic decay. Releases poison bursts upon destruction.", 240, true, DARKGREEN },
+            { "Malgor, Lord of Decay", "Sunken Crypts", "Ancient overlord of the subterranean crypts. Commands toxic rings and minion hordes.", 1800, true, GREEN },
+            { "Pyrexia, Flame Sovereign", "Lava Caverns", "Elemental entity born from primordial magma cores. Incinerates intruders with fire waves.", 1500, false, ORANGE },
+            { "Glacial Warden", "Ice Vaults", "Sentient armor enchanted with absolute zero frost runes. Unleashes freezing shockwaves.", 1600, false, SKYBLUE }
+        };
+    }
+
+    void TriggerBossCinematic(std::string bossName, Vector2 bossPos) {
+        isCinematicActive = true;
+        cinematicTimer = 3.5f; // 3.5 seconds cinematic intro pan
+        cinematicBossTitle = bossName;
+        cinematicTargetPos = bossPos;
+    }
+
+    void TriggerCriticalHitFX() {
+        chromaticAberrationTimer = 0.35f; // 350ms chromatic aberration pulse
+        screenShakeTimer = 0.25f;
+        screenShakeIntensity = 8.0f;
+    }
+
+    void Update(float dt) {
+        if (isCinematicActive) {
+            cinematicTimer -= dt;
+            if (cinematicTimer <= 0.0f) {
+                isCinematicActive = false;
+            }
+        }
+
+        if (chromaticAberrationTimer > 0.0f) {
+            chromaticAberrationTimer -= dt;
+        }
+
+        if (screenShakeTimer > 0.0f) {
+            screenShakeTimer -= dt;
+        }
+    }
+
+    Vector2 ApplyScreenShake(Vector2 cameraPos) {
+        if (screenShakeTimer > 0.0f) {
+            float offsetX = (float)GetRandomValue(-(int)screenShakeIntensity, (int)screenShakeIntensity);
+            float offsetY = (float)GetRandomValue(-(int)screenShakeIntensity, (int)screenShakeIntensity);
+            return { cameraPos.x + offsetX, cameraPos.y + offsetY };
+        }
+        return cameraPos;
+    }
+
+    void DrawCinematicLetterboxBars(int screenW, int screenH) {
+        if (!isCinematicActive) return;
+
+        int barH = 90;
+        // Top Letterbox Bar
+        DrawRectangle(0, 0, screenW, barH, BLACK);
+        // Bottom Letterbox Bar
+        DrawRectangle(0, screenH - barH, screenW, barH, BLACK);
+
+        // Boss Title Reveal
+        float alpha = (cinematicTimer > 3.0f) ? (3.5f - cinematicTimer) / 0.5f : ((cinematicTimer < 0.5f) ? cinematicTimer / 0.5f : 1.0f);
+        Color titleCol = ColorAlpha(GOLD, alpha);
+        
+        const char* subText = "BOSS ENCOUNTER";
+        DrawText(subText, (screenW - MeasureText(subText, 12)) / 2, screenH - barH + 20, 12, ColorAlpha(LIGHTGRAY, alpha));
+        DrawText(cinematicBossTitle.c_str(), (screenW - MeasureText(cinematicBossTitle.c_str(), 24)) / 2, screenH - barH + 42, 24, titleCol);
+    }
+
+    void DrawCodexUI(int screenW, int screenH, Vector2 mousePos) {
+        if (!isCodexOpen) return;
+
+        int uiW = 750, uiH = 460;
+        int uiX = (screenW - uiW) / 2;
+        int uiY = (screenH - uiH) / 2;
+
+        DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.75f));
+        DrawRectangle(uiX, uiY, uiW, uiH, GetColor(0x12121DFF));
+        DrawRectangleLines(uiX, uiY, uiW, uiH, GOLD);
+
+        // Header
+        DrawRectangle(uiX, uiY, uiW, 45, GetColor(0x1B1B2AFF));
+        DrawText("BESTIARY & LORE CODEX", uiX + 20, uiY + 15, 16, GOLD);
+        DrawText("[L] Close Codex", uiX + uiW - 120, uiY + 16, 11, LIGHTGRAY);
+
+        // Left List Column
+        int listY = uiY + 65;
+        for (size_t i = 0; i < codexEntries.size(); i++) {
+            const auto& entry = codexEntries[i];
+            Rectangle itemRec = { (float)uiX + 20, (float)listY, 260.0f, 40.0f };
+            bool isSelected = (selectedCodexIndex == (int)i);
+            bool isHovered = CheckCollisionPointRec(mousePos, itemRec);
+
+            DrawRectangleRec(itemRec, isSelected ? GetColor(0x28283CFF) : GetColor(0x1A1A28FF));
+            DrawRectangleLinesEx(itemRec, 1.0f, isSelected ? GOLD : DARKGRAY);
+
+            std::string displayName = entry.isDiscovered ? entry.name : "??? (Undiscovered)";
+            DrawText(displayName.c_str(), (int)itemRec.x + 12, (int)itemRec.y + 13, 11, entry.isDiscovered ? WHITE : GRAY);
+
+            if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                selectedCodexIndex = (int)i;
+            }
+
+            listY + 48;
+        }
+
+        // Right Detail Column
+        const auto& selectedEntry = codexEntries[selectedCodexIndex];
+        int detailX = uiX + 310;
+        int detailY = uiY + 65;
+
+        DrawRectangle(detailX, detailY, 415, 370, GetColor(0x181824FF));
+        DrawRectangleLines(detailX, detailY, 415, 370, DARKGRAY);
+
+        if (selectedEntry.isDiscovered) {
+            DrawText(selectedEntry.name.c_str(), detailX + 20, detailY + 20, 18, selectedEntry.themeColor);
+            DrawText(TextFormat("Habitat: %s", selectedEntry.biome.c_str()), detailX + 20, detailY + 50, 12, SKYBLUE);
+            DrawText(TextFormat("Base Health: %d HP", selectedEntry.baseHp), detailX + 20, detailY + 72, 12, GREEN);
+
+            DrawText("Description & Lore:", detailX + 20, detailY + 110, 12, GOLD);
+            DrawText(selectedEntry.description.c_str(), detailX + 20, detailY + 135, 11, LIGHTGRAY);
+        } else {
+            DrawText("CLASSIFIED LORE ENTRY", detailX + 20, detailY + 30, 16, RED);
+            DrawText("Defeat this entity in dungeon biomes to unlock codex records.", detailX + 20, detailY + 70, 11, GRAY);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "BossBehaviorTree.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "SaveSystem.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+#include "WasmWebManager.h"
+#include "QuestAndBountySystem.h"
+#include "ProceduralBossAndMutatorSystem.h"
+#include "SetAndGemCraftingSystem.h"
+#include "Act2SunkenCryptsSystem.h"
+#include "CrucibleSurvivalMode.h"
+#include "NetworkCoOpSystem.h"
+#include "CinematicAndPolishSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Cinematic & Visual Polish Pass");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DungeonGenerator dungeon;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    TalentTreeManager talentTree;
+    MinimapFogManager minimap;
+    EquipmentManager gearMgr;
+    CombatDepthManager combatMgr;
+    BiomeAndTrapManager biomeMgr;
+    TownMetaProgressionManager metaMgr;
+    GamepadInputManager input;
+    ClassAndComboManager classMgr;
+    EliteAndMinibossManager eliteMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    MultiFloorManager floorMgr;
+    AudioSynthesizerManager synthAudio;
+    WasmWebManager wasmWeb;
+    QuestAndBountyManager questMgr;
+    CinematicAndPolishManager polishMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    talentTree.Init();
+    metaMgr.InitNPCs();
+    classMgr.Init();
+    synthAudio.Init();
+    wasmWeb.Init();
+    questMgr.InitQuests();
+    polishMgr.InitCodex();
+
+    player.pos = { 640.0f, 360.0f };
+
+    // Trigger Boss Cinematic Intro Demo on Startup
+    polishMgr.TriggerBossCinematic("Malgor, Lord of Decay", { 800.0f, 300.0f });
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        input.Update();
+        combatUIMgr.Update(dt);
+        synthAudio.Update(player.pos);
+        polishMgr.Update(dt);
+
+        // Toggle Codex UI with Key 'L'
+        if (IsKeyPressed(KEY_L)) {
+            polishMgr.isCodexOpen = !polishMgr.isCodexOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (!polishMgr.isCodexOpen && !polishMgr.isCinematicActive) {
+            if (input.attackPressed) {
+                Vector2 aimDir = (input.currentInputType == CTRL_GAMEPAD) ? input.aimInput : Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+                synthAudio.PlaySound2D(SFX_SWORD_SWING, 0.6f);
+
+                if (classMgr.activeHitbox.active) {
+                    float totalDmg = prof.baseDamage * classMgr.activeHitbox.damageMultiplier;
+                    bool isCrit = ((float)GetRandomValue(0, 100) / 100.0f) < prof.critChance;
+                    if (isCrit) {
+                        totalDmg *= 1.75f;
+                        synthAudio.PlaySound2D(SFX_CRITICAL_HIT, 0.9f);
+                        polishMgr.TriggerCriticalHitFX(); // Trigger Chromatic Aberration & Screen Shake
+                    }
+                    combatUIMgr.SpawnDamageText(classMgr.activeHitbox.center, totalDmg, isCrit ? DAMAGE_CRIT : DAMAGE_NORMAL);
+                }
+            }
+
+            if (Vector2Length(input.moveInput) > 0.0f) {
+                player.pos.x += input.moveInput.x * prof.moveSpeed * dt;
+                player.pos.y += input.moveInput.y * prof.moveSpeed * dt;
+            }
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+
+        // Camera Pan during Cinematic
+        Vector2 targetCamPos = polishMgr.isCinematicActive ? polishMgr.cinematicTargetPos : player.pos;
+        cameraMgr.Update(targetCamPos, targetCamPos, false, dt);
+        cameraMgr.camera.target = polishMgr.ApplyScreenShake(cameraMgr.camera.target);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                combatUIMgr.DrawFloatingTexts(cameraMgr.camera);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        input.DrawInputTypeHUD(screenW, screenH);
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        polishMgr.DrawCinematicLetterboxBars(screenW, screenH);
+
+        DrawText("[L] Bestiary & Lore Codex", screenW - 210, 15, 11, GOLD);
+
+        polishMgr.DrawCodexUI(screenW, screenH, mousePos);
+
+        EndDrawing();
+    }
+
+    synthAudio.Unload();
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
