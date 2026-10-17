@@ -1,0 +1,340 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <sstream>
+#include <algorithm>
+#include <deque>
+
+struct ProfilerMetrics {
+    float frameTimeMs = 0.0f;
+    int fps = 0;
+    int drawCalls = 0;
+    int activeParticleCount = 0;
+    int activeEnemyCount = 0;
+    size_t approximateMemoryKB = 0;
+};
+
+class DeveloperConsoleAndProfilerManager {
+public:
+    bool isConsoleOpen = false;
+    bool isDebugOverlayEnabled = false;
+
+    // Terminal Input & Output Buffer
+    char inputBuffer[128] = "\0";
+    int letterCount = 0;
+    std::deque<std::string> consoleLogs;
+    const size_t MAX_LOG_LINES = 16;
+
+    // Command History
+    std::vector<std::string> commandHistory;
+    int historyIndex = -1;
+
+    // Cheat Flags
+    bool godMode = false;
+    bool infiniteMana = false;
+    float damageMultiplierCheat = 1.0f;
+
+    // Performance Metrics History
+    ProfilerMetrics currentMetrics;
+    std::deque<float> frameTimeHistory;
+    const size_t MAX_HISTORY_SAMPLES = 60;
+
+    void Init() {
+        LogMessage("Vethoria Dev Console Initialized.");
+        LogMessage("Type '/help' for available debug commands.");
+    }
+
+    void LogMessage(const std::string& msg) {
+        consoleLogs.push_back(msg);
+        if (consoleLogs.size() > MAX_LOG_LINES) {
+            consoleLogs.pop_front();
+        }
+    }
+
+    void ExecuteCommand(const std::string& cmdLine, Vector2& playerPos, float& playerHp, float playerMaxHp, int& playerGold) {
+        if (cmdLine.empty()) return;
+
+        commandHistory.push_back(cmdLine);
+        historyIndex = (int)commandHistory.size();
+        LogMessage("> " + cmdLine);
+
+        std::stringstream ss(cmdLine);
+        std::string cmd;
+        ss >> cmd;
+
+        std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::tolower);
+
+        if (cmd == "/help") {
+            LogMessage("--- COMMAND LIST ---");
+            LogMessage("/god          - Toggle Invincibility");
+            LogMessage("/heal         - Restore Full Health");
+            LogMessage("/gold <amt>   - Add Gold Currency");
+            LogMessage("/tp_town      - Teleport to Town Hub");
+            LogMessage("/debug        - Toggle Hitbox Overlays");
+            LogMessage("/clear        - Clear Terminal Logs");
+        } else if (cmd == "/god") {
+            godMode = !godMode;
+            LogMessage(godMode ? "God Mode: ENABLED" : "God Mode: DISABLED");
+        } else if (cmd == "/heal") {
+            playerHp = playerMaxHp;
+            LogMessage("Player restored to full health.");
+        } else if (cmd == "/gold") {
+            int amount = 0;
+            if (ss >> amount) {
+                playerGold += amount;
+                LogMessage(TextFormat("Added %d Gold. Total: %d", amount, playerGold));
+            } else {
+                LogMessage("Usage: /gold <amount>");
+            }
+        } else if (cmd == "/tp_town") {
+            playerPos = { 640.0f, 360.0f };
+            LogMessage("Teleported player to Town Hub.");
+        } else if (cmd == "/debug") {
+            isDebugOverlayEnabled = !isDebugOverlayEnabled;
+            LogMessage(isDebugOverlayEnabled ? "Debug Overlays: ENABLED" : "Debug Overlays: DISABLED");
+        } else if (cmd == "/clear") {
+            consoleLogs.clear();
+        } else {
+            LogMessage("Unknown command. Type '/help' for list.");
+        }
+    }
+
+    void Update(float dt, Vector2& playerPos, float& playerHp, float playerMaxHp, int& playerGold) {
+        // Toggle Console with ~ or GRAVE key
+        if (IsKeyPressed(KEY_GRAVE)) {
+            isConsoleOpen = !isConsoleOpen;
+        }
+
+        // Update Frame Time History for Performance Profiler
+        currentMetrics.frameTimeMs = dt * 1000.0f;
+        currentMetrics.fps = GetFPS();
+
+        frameTimeHistory.push_back(currentMetrics.frameTimeMs);
+        if (frameTimeHistory.size() > MAX_HISTORY_SAMPLES) {
+            frameTimeHistory.pop_front();
+        }
+
+        // Process Text Input when Console is Open
+        if (isConsoleOpen) {
+            int key = GetCharPressed();
+            while (key > 0) {
+                if ((key >= 32) && (key <= 125) && (letterCount < 120)) {
+                    inputBuffer[letterCount] = (char)key;
+                    inputBuffer[letterCount + 1] = '\0';
+                    letterCount++;
+                }
+                key = GetCharPressed();
+            }
+
+            if (IsKeyPressed(KEY_BACKSPACE)) {
+                letterCount--;
+                if (letterCount < 0) letterCount = 0;
+                inputBuffer[letterCount] = '\0';
+            }
+
+            if (IsKeyPressed(KEY_ENTER)) {
+                ExecuteCommand(std::string(inputBuffer), playerPos, playerHp, playerMaxHp, playerGold);
+                inputBuffer[0] = '\0';
+                letterCount = 0;
+            }
+        }
+
+        // Apply God Mode Immunity
+        if (godMode) {
+            playerHp = playerMaxHp;
+        }
+    }
+
+    void RecordMetrics(int drawCalls, int particleCount, int enemyCount) {
+        currentMetrics.drawCalls = drawCalls;
+        currentMetrics.activeParticleCount = particleCount;
+        currentMetrics.activeEnemyCount = enemyCount;
+    }
+
+    void DrawWorldSpaceDebugOverlays(Vector2 playerPos, Vector2 bossPos, float bossRadius, bool isBossActive) {
+        if (!isDebugOverlayEnabled) return;
+
+        // Player Bounding Circle & Position Vector
+        DrawCircleLines((int)playerPos.x, (int)playerPos.y, 16.0f, GREEN);
+        DrawText(TextFormat("(%.1f, %.1f)", playerPos.x, playerPos.y), (int)playerPos.x - 25, (int)playerPos.y + 20, 9, GREEN);
+
+        // Boss Bounding Circle
+        if (isBossActive) {
+            DrawCircleLines((int)bossPos.x, (int)bossPos.y, bossRadius, RED);
+            DrawText(TextFormat("Boss Radius: %.1f", bossRadius), (int)bossPos.x - 30, (int)bossPos.y - (int)bossRadius - 15, 9, RED);
+        }
+    }
+
+    void DrawProfilerHUD(int screenW) {
+        if (!isDebugOverlayEnabled) return;
+
+        int panelW = 220, panelH = 140;
+        int panelX = 15, panelY = 180;
+
+        DrawRectangle(panelX, panelY, panelW, panelH, ColorAlpha(BLACK, 0.85f));
+        DrawRectangleLines(panelX, panelY, panelW, panelH, LIME);
+
+        DrawText("PERFORMANCE PROFILER", panelX + 10, panelY + 10, 11, LIME);
+        DrawText(TextFormat("FPS: %d (%.2f ms)", currentMetrics.fps, currentMetrics.frameTimeMs), panelX + 10, panelY + 28, 10, WHITE);
+        DrawText(TextFormat("Draw Calls: %d", currentMetrics.drawCalls), panelX + 10, panelY + 44, 10, LIGHTGRAY);
+        DrawText(TextFormat("Particles: %d", currentMetrics.activeParticleCount), panelX + 10, panelY + 60, 10, SKYBLUE);
+        DrawText(TextFormat("Active Enemies: %d", currentMetrics.activeEnemyCount), panelX + 10, panelY + 76, 10, GOLD);
+
+        // Frame Time Graph Plot
+        int graphX = panelX + 10, graphY = panelY + 125;
+        int graphW = 200, graphH = 25;
+        DrawRectangle(graphX, graphY - graphH, graphW, graphH, ColorAlpha(DARKGRAY, 0.5f));
+
+        for (size_t i = 0; i < frameTimeHistory.size(); i++) {
+            float val = frameTimeHistory[i];
+            float norm = std::min(1.0f, val / 33.3f); // 33.3ms = 30fps baseline
+            int barH = (int)(norm * graphH);
+
+            Color barCol = (val > 16.6f) ? RED : GREEN; // Red if slower than 60 FPS (16.6ms)
+            DrawRectangle(graphX + (int)i * 3, graphY - barH, 2, barH, barCol);
+        }
+    }
+
+    void DrawConsoleUI(int screenW, int screenH) {
+        if (!isConsoleOpen) return;
+
+        int consoleH = 260;
+        DrawRectangle(0, 0, screenW, consoleH, ColorAlpha(GetColor(0x0F0F18FF), 0.92f));
+        DrawRectangle(0, consoleH - 2, screenW, 2, GOLD);
+
+        // Terminal Logs
+        int logY = 15;
+        for (const auto& log : consoleLogs) {
+            Color logCol = (log.rfind(">", 0) == 0) ? GOLD : (log.rfind("---", 0) == 0 ? SKYBLUE : LIGHTGRAY);
+            DrawText(log.c_str(), 15, logY, 11, logCol);
+            logY += 14;
+        }
+
+        // Input Line
+        DrawRectangle(0, consoleH - 28, screenW, 26, GetColor(0x1B1B2AFF));
+        DrawText(">", 12, consoleH - 20, 12, GOLD);
+        DrawText(inputBuffer, 25, consoleH - 20, 12, WHITE);
+
+        // Cursor Blink
+        if ((int)(GetTime() * 3.0f) % 2 == 0) {
+            int textW = MeasureText(inputBuffer, 12);
+            DrawRectangle(27 + textW, consoleH - 20, 7, 12, GOLD);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DungeonGenerator.h"
+#include "DialogueAndTownSystem.h"
+#include "PortalManager.h"
+#include "AudioManager.h"
+#include "TalentTreeSystem.h"
+#include "MinimapFogSystem.h"
+#include "EquipmentSystem.h"
+#include "CombatDepthSystem.h"
+#include "BiomeAndTrapSystem.h"
+#include "TownMetaProgression.h"
+#include "GamepadManager.h"
+#include "ClassAndComboSystem.h"
+#include "EliteAndMinibossSystem.h"
+#include "CombatUIAndTooltips.h"
+#include "MultiFloorSystem.h"
+#include "AudioSynthesizer.h"
+#include "WasmWebManager.h"
+#include "QuestAndBountySystem.h"
+#include "DeveloperConsoleAndProfiler.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Dev Console & Profiler");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    PortalManager portals;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    CombatUIAndTooltipManager combatUIMgr;
+    DeveloperConsoleAndProfilerManager devConsole;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    devConsole.Init();
+
+    player.pos = { 640.0f, 360.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        // Update Dev Console Terminal & Cheats
+        devConsole.Update(dt, player.pos, player.health, player.maxHealth, player.gold);
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        if (!devConsole.isConsoleOpen) {
+            classMgr.Update(dt, player.pos, particles);
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+            }
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, player.pos, false, dt);
+
+        // Record Live Profiler Performance Data
+        devConsole.RecordMetrics(18, (int)particles.particles.size(), 4);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                // Draw World-Space Debug Bounding Hitboxes
+                devConsole.DrawWorldSpaceDebugOverlays(player.pos, { 800.0f, 300.0f }, 40.0f, true);
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+
+        // Developer Tooling Overlays
+        devConsole.DrawProfilerHUD(screenW);
+        devConsole.DrawConsoleUI(screenW, screenH);
+
+        DrawText("[~] Dev Console", screenW - 130, 15, 11, devConsole.isConsoleOpen ? GOLD : GRAY);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
