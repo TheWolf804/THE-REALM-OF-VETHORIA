@@ -1,0 +1,349 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <fstream>
+#include <sstream>
+
+enum EditorToolType {
+    TOOL_TILE_VOID = 0,
+    TOOL_TILE_FLOOR,
+    TOOL_TILE_WALL,
+    TOOL_HAZARD_LAVA,
+    TOOL_HAZARD_ICE,
+    TOOL_HAZARD_POISON,
+    TOOL_HAZARD_SPIKES,
+    TOOL_SPAWN_PLAYER,
+    TOOL_SPAWN_ENEMY,
+    TOOL_SPAWN_ELITE,
+    TOOL_SPAWN_BOSS,
+    TOOL_EXIT_STAIRS
+};
+
+struct EditorTile {
+    int type; // Maps to EditorToolType
+};
+
+class DungeonLevelEditorManager {
+public:
+    bool isEditorOpen = false;
+
+    // Grid Dimensions
+    static const int GRID_COLS = 32;
+    static const int GRID_ROWS = 24;
+    static const int TILE_SIZE = 32;
+
+    EditorTile grid[GRID_ROWS][GRID_COLS];
+
+    // Selected Tool Palette State
+    EditorToolType currentTool = TOOL_TILE_FLOOR;
+
+    // Editor Viewport Camera
+    Camera2D editorCam = { 0 };
+
+    // Saved Spawn Positions
+    Vector2 playerSpawn = { 3 * TILE_SIZE, 3 * TILE_SIZE };
+    Vector2 bossSpawn = { 28 * TILE_SIZE, 20 * TILE_SIZE };
+
+    void Init() {
+        editorCam.zoom = 1.0f;
+        editorCam.offset = { 100.0f, 60.0f };
+        editorCam.target = { 0.0f, 0.0f };
+
+        ClearGrid();
+    }
+
+    void ClearGrid() {
+        for (int r = 0; r < GRID_ROWS; r++) {
+            for (int c = 0; c < GRID_COLS; c++) {
+                if (r == 0 || r == GRID_ROWS - 1 || c == 0 || c == GRID_COLS - 1) {
+                    grid[r][c].type = TOOL_TILE_WALL;
+                } else {
+                    grid[r][c].type = TOOL_TILE_FLOOR;
+                }
+            }
+        }
+    }
+
+    void Update(float dt, Vector2 mousePos) {
+        if (!isEditorOpen) return;
+
+        // Editor Camera Panning (Right Mouse Drag)
+        if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+            Vector2 delta = GetMouseDelta();
+            editorCam.offset.x += delta.x;
+            editorCam.offset.y += delta.y;
+        }
+
+        // Camera Zoom (Mouse Wheel)
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0) {
+            editorCam.zoom += wheel * 0.1f;
+            if (editorCam.zoom < 0.5f) editorCam.zoom = 0.5f;
+            if (editorCam.zoom > 2.0f) editorCam.zoom = 2.0f;
+        }
+
+        // Paint Tiles on Left Mouse Click/Drag over Canvas
+        Vector2 worldMouse = GetScreenToWorld2D(mousePos, editorCam);
+        int col = (int)(worldMouse.x / TILE_SIZE);
+        int row = (int)(worldMouse.y / TILE_SIZE);
+
+        if (col >= 0 && col < GRID_COLS && row >= 0 && row < GRID_ROWS) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && mousePos.x > 220) { // Don't paint through palette UI
+                grid[row][col].type = currentTool;
+
+                if (currentTool == TOOL_SPAWN_PLAYER) {
+                    playerSpawn = { col * (float)TILE_SIZE + TILE_SIZE / 2.0f, row * (float)TILE_SIZE + TILE_SIZE / 2.0f };
+                } else if (currentTool == TOOL_SPAWN_BOSS) {
+                    bossSpawn = { col * (float)TILE_SIZE + TILE_SIZE / 2.0f, row * (float)TILE_SIZE + TILE_SIZE / 2.0f };
+                }
+            }
+        }
+    }
+
+    void ExportLevelData(const std::string& filename) {
+        std::ofstream file(filename);
+        if (!file.is_open()) return;
+
+        file << "{\n";
+        file << "  \"cols\": " << GRID_COLS << ",\n";
+        file << "  \"rows\": " << GRID_ROWS << ",\n";
+        file << "  \"player_spawn\": [" << playerSpawn.x << ", " << playerSpawn.y << "],\n";
+        file << "  \"boss_spawn\": [" << bossSpawn.x << ", " << bossSpawn.y << "],\n";
+        file << "  \"tiles\": [\n";
+
+        for (int r = 0; r < GRID_ROWS; r++) {
+            file << "    [";
+            for (int c = 0; c < GRID_COLS; c++) {
+                file << grid[r][c].type << (c < GRID_COLS - 1 ? ", " : "");
+            }
+            file << "]" << (r < GRID_ROWS - 1 ? ",\n" : "\n");
+        }
+
+        file << "  ]\n";
+        file << "}\n";
+        file.close();
+    }
+
+    void DrawEditorWorld() {
+        if (!isEditorOpen) return;
+
+        BeginMode2D(editorCam);
+
+        // Draw Canvas Grid Background
+        for (int r = 0; r < GRID_ROWS; r++) {
+            for (int c = 0; c < GRID_COLS; c++) {
+                Rectangle tileRec = { (float)(c * TILE_SIZE), (float)(r * TILE_SIZE), (float)TILE_SIZE, (float)TILE_SIZE };
+                
+                Color tileCol = GetColor(0x181824FF);
+                switch (grid[r][c].type) {
+                    case TOOL_TILE_VOID: tileCol = BLACK; break;
+                    case TOOL_TILE_FLOOR: tileCol = GetColor(0x222232FF); break;
+                    case TOOL_TILE_WALL: tileCol = DARKGRAY; break;
+                    case TOOL_HAZARD_LAVA: tileCol = ORANGE; break;
+                    case TOOL_HAZARD_ICE: tileCol = SKYBLUE; break;
+                    case TOOL_HAZARD_POISON: tileCol = DARKGREEN; break;
+                    case TOOL_HAZARD_SPIKES: tileCol = RED; break;
+                    case TOOL_EXIT_STAIRS: tileCol = PURPLE; break;
+                }
+
+                DrawRectangleRec(tileRec, tileCol);
+                DrawRectangleLinesEx(tileRec, 1.0f, GetColor(0x2A2A3CFF));
+
+                // Spawn Markers
+                if (grid[r][c].type == TOOL_SPAWN_PLAYER) {
+                    DrawCircle(c * TILE_SIZE + 16, r * TILE_SIZE + 16, 10, GREEN);
+                    DrawText("P", c * TILE_SIZE + 12, r * TILE_SIZE + 8, 12, BLACK);
+                } else if (grid[r][c].type == TOOL_SPAWN_ENEMY) {
+                    DrawCircle(c * TILE_SIZE + 16, r * TILE_SIZE + 16, 8, RED);
+                } else if (grid[r][c].type == TOOL_SPAWN_ELITE) {
+                    DrawCircle(c * TILE_SIZE + 16, r * TILE_SIZE + 16, 10, GOLD);
+                } else if (grid[r][c].type == TOOL_SPAWN_BOSS) {
+                    DrawCircle(c * TILE_SIZE + 16, r * TILE_SIZE + 16, 12, MAROON);
+                    DrawText("B", c * TILE_SIZE + 11, r * TILE_SIZE + 8, 12, WHITE);
+                }
+            }
+        }
+
+        // Grid Perimeter Outer Outline
+        DrawRectangleLines(0, 0, GRID_COLS * TILE_SIZE, GRID_ROWS * TILE_SIZE, GOLD);
+
+        EndMode2D();
+    }
+
+    void DrawEditorUI(int screenW, int screenH, Vector2 mousePos) {
+        if (!isEditorOpen) return;
+
+        // Left Palette Panel
+        int paletteW = 210;
+        DrawRectangle(0, 0, paletteW, screenH, ColorAlpha(GetColor(0x12121DFF), 0.95f));
+        DrawRectangle(paletteW - 2, 0, 2, screenH, GOLD);
+
+        DrawText("DUNGEON LEVEL EDITOR", 15, 15, 12, GOLD);
+        DrawText("Tool Palette:", 15, 45, 11, LIGHTGRAY);
+
+        struct ToolOption {
+            EditorToolType tool;
+            std::string label;
+            Color color;
+        };
+
+        std::vector<ToolOption> tools = {
+            { TOOL_TILE_FLOOR, "Floor Tile", GetColor(0x3A3A50FF) },
+            { TOOL_TILE_WALL, "Solid Wall", DARKGRAY },
+            { TOOL_HAZARD_LAVA, "Lava Hazard", ORANGE },
+            { TOOL_HAZARD_ICE, "Ice Trap", SKYBLUE },
+            { TOOL_HAZARD_POISON, "Poison Sludge", DARKGREEN },
+            { TOOL_HAZARD_SPIKES, "Spike Trap", RED },
+            { TOOL_SPAWN_PLAYER, "Player Spawn", GREEN },
+            { TOOL_SPAWN_ENEMY, "Enemy Spawn", RED },
+            { TOOL_SPAWN_ELITE, "Elite Spawn", GOLD },
+            { TOOL_SPAWN_BOSS, "Boss Spawn", MAROON },
+            { TOOL_EXIT_STAIRS, "Exit Stairs", PURPLE },
+            { TOOL_TILE_VOID, "Erase / Void", BLACK }
+        };
+
+        int btnY = 70;
+        for (const auto& option : tools) {
+            Rectangle btnRec = { 15.0f, (float)btnY, 180.0f, 28.0f };
+            bool isSelected = (currentTool == option.tool);
+            bool isHovered = CheckCollisionPointRec(mousePos, btnRec);
+
+            DrawRectangleRec(btnRec, isSelected ? GetColor(0x282840FF) : GetColor(0x1A1A28FF));
+            DrawRectangleLinesEx(btnRec, 1.0f, isSelected ? GOLD : DARKGRAY);
+
+            DrawRectangle((int)btnRec.x + 6, (int)btnRec.y + 6, 16, 16, option.color);
+            DrawText(option.label.c_str(), (int)btnRec.x + 30, (int)btnRec.y + 8, 10, WHITE);
+
+            if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                currentTool = option.tool;
+            }
+
+            btnY += 33;
+        }
+
+        // Action Buttons (Export & Clear)
+        Rectangle exportBtn = { 15.0f, (float)screenH - 80, 180.0f, 32.0f };
+        bool expHover = CheckCollisionPointRec(mousePos, exportBtn);
+        DrawRectangleRec(exportBtn, expHover ? GetColor(0x284028FF) : GetColor(0x182818FF));
+        DrawRectangleLinesEx(exportBtn, 1.0f, GREEN);
+        DrawText("Export Level JSON", (int)exportBtn.x + 25, (int)exportBtn.y + 10, 11, WHITE);
+
+        if (expHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            ExportLevelData("custom_level.json");
+        }
+
+        Rectangle clearBtn = { 15.0f, (float)screenH - 40, 180.0f, 30.0f };
+        bool clrHover = CheckCollisionPointRec(mousePos, clearBtn);
+        DrawRectangleRec(clearBtn, clrHover ? RED : GetColor(0x281818FF));
+        DrawRectangleLinesEx(clearBtn, 1.0f, RED);
+        DrawText("Clear Grid", (int)clearBtn.x + 55, (int)clearBtn.y + 9, 11, WHITE);
+
+        if (clrHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            ClearGrid();
+        }
+
+        // Top Info Header
+        DrawRectangle(paletteW + 15, 10, 380, 28, ColorAlpha(BLACK, 0.8f));
+        DrawText("L-Click: Paint | R-Click Drag: Pan View | Scroll: Zoom | [E] Close", paletteW + 25, 18, 10, LIGHTGRAY);
+   #include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DialogueAndTownSystem.h"
+#include "AudioManager.h"
+#include "ClassAndComboSystem.h"
+#include "DungeonLevelEditor.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Dungeon Level Editor");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    DungeonLevelEditorManager editorMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    editorMgr.Init();
+
+    player.pos = { 640.0f, 360.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        // Toggle Dungeon Level Editor with Key 'E'
+        if (IsKeyPressed(KEY_E)) {
+            editorMgr.isEditorOpen = !editorMgr.isEditorOpen;
+        }
+
+        if (editorMgr.isEditorOpen) {
+            editorMgr.Update(dt, mousePos);
+        } else {
+            ClassProfile prof = classMgr.GetCurrentProfile();
+            player.maxHealth = prof.maxHealth;
+
+            classMgr.Update(dt, player.pos, particles);
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+            }
+
+            player.Update(dt, particles);
+            particles.Update(dt);
+            cameraMgr.Update(player.pos, player.pos, false, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            if (editorMgr.isEditorOpen) {
+                // Render Level Editor Canvas
+                editorMgr.DrawEditorWorld();
+            } else {
+                cameraMgr.BeginMode();
+                    town.DrawHubWorld(player.pos);
+                    classMgr.DrawAttackVisuals(player.pos);
+                    player.Draw();
+                    particles.Draw();
+
+                    lighting.BeginLightPass();
+                    lighting.DrawLight(player.pos, 260.0f, classMgr.GetCurrentProfile().themeColor, 0.85f);
+                    lighting.EndLightPass(GetColor(0x181822FF));
+                cameraMgr.EndMode();
+            }
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        if (!editorMgr.isEditorOpen) {
+            player.DrawHUD();
+            classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+            DrawText("[E] Level Editor", screenW - 130, 15, 11, GOLD);
+        } else {
+            editorMgr.DrawEditorUI(screenW, screenH, mousePos);
+        }
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+} }
+
+};
