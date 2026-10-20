@@ -1,0 +1,244 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+#include <fstream>
+#include <sstream>
+
+class AudioMixerSettingsManager {
+public:
+    bool isAudioMenuOpen = false;
+
+    // Volume Levels (0.0f to 1.0f)
+    float masterVolume = 0.8f;
+    float sfxVolume = 1.0f;
+    float musicSynthVolume = 0.7f;
+
+    // UI Dragging States
+    bool isDraggingMaster = false;
+    bool isDraggingSFX = false;
+    bool isDraggingMusic = false;
+
+    void Init() {
+        LoadSettings("audio_settings.json");
+        ApplyVolumes();
+    }
+
+    void ApplyVolumes() {
+        SetMasterVolume(masterVolume);
+    }
+
+    float GetEffectiveSFXVolume() const {
+        return masterVolume * sfxVolume;
+    }
+
+    float GetEffectiveMusicVolume() const {
+        return masterVolume * musicSynthVolume;
+    }
+
+    void SaveSettings(const std::string& filename) {
+        std::ofstream file(filename);
+        if (!file.is_open()) return;
+
+        file << "{\n";
+        file << "  \"master_volume\": " << masterVolume << ",\n";
+        file << "  \"sfx_volume\": " << sfxVolume << ",\n";
+        file << "  \"music_volume\": " << musicSynthVolume << "\n";
+        file << "}\n";
+        file.close();
+    }
+
+    void LoadSettings(const std::string& filename) {
+        std::ifstream file(filename);
+        if (!file.is_open()) return;
+
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.find("master_volume") != std::string::npos) {
+                masterVolume = std::stof(line.substr(line.find(":") + 1));
+            } else if (line.find("sfx_volume") != std::string::npos) {
+                sfxVolume = std::stof(line.substr(line.find(":") + 1));
+            } else if (line.find("music_volume") != std::string::npos) {
+                musicSynthVolume = std::stof(line.substr(line.find(":") + 1));
+            }
+        }
+        file.close();
+    }
+
+    void Update(float dt, Vector2 mousePos) {
+        // Toggle Audio Mixer with Key 'M'
+        if (IsKeyPressed(KEY_M)) {
+            isAudioMenuOpen = !isAudioMenuOpen;
+            if (!isAudioMenuOpen) {
+                SaveSettings("audio_settings.json");
+            }
+        }
+
+        if (!isAudioMenuOpen) return;
+
+        // Slider Interaction Handling
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+            isDraggingMaster = false;
+            isDraggingSFX = false;
+            isDraggingMusic = false;
+        }
+
+        int uiW = 460, uiH = 320;
+        int uiX = (1280 - uiW) / 2;
+        int uiY = (720 - uiH) / 2;
+
+        Rectangle masterSlider = { (float)uiX + 150, (float)uiY + 95, 240.0f, 16.0f };
+        Rectangle sfxSlider = { (float)uiX + 150, (float)uiY + 155, 240.0f, 16.0f };
+        Rectangle musicSlider = { (float)uiX + 150, (float)uiY + 215, 240.0f, 16.0f };
+
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (CheckCollisionPointRec(mousePos, masterSlider)) isDraggingMaster = true;
+            if (CheckCollisionPointRec(mousePos, sfxSlider)) isDraggingSFX = true;
+            if (CheckCollisionPointRec(mousePos, musicSlider)) isDraggingMusic = true;
+        }
+
+        if (isDraggingMaster) {
+            masterVolume = Clamp((mousePos.x - masterSlider.x) / masterSlider.width, 0.0f, 1.0f);
+            ApplyVolumes();
+        }
+        if (isDraggingSFX) {
+            sfxVolume = Clamp((mousePos.x - sfxSlider.x) / sfxSlider.width, 0.0f, 1.0f);
+        }
+        if (isDraggingMusic) {
+            musicSynthVolume = Clamp((mousePos.x - musicSlider.x) / musicSlider.width, 0.0f, 1.0f);
+        }
+    }
+
+    void DrawAudioMixerUI(int screenW, int screenH, Vector2 mousePos) {
+        if (!isAudioMenuOpen) return;
+
+        int uiW = 460, uiH = 320;
+        int uiX = (screenW - uiW) / 2;
+        int uiY = (screenH - uiH) / 2;
+
+        DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.75f));
+        DrawRectangle(uiX, uiY, uiW, uiH, GetColor(0x12121DFF));
+        DrawRectangleLines(uiX, uiY, uiW, uiH, GOLD);
+
+        // Header
+        DrawRectangle(uiX, uiY, uiW, 45, GetColor(0x1B1B2AFF));
+        DrawText("AUDIO MIXER SETTINGS", uiX + 20, uiY + 15, 15, GOLD);
+        DrawText("[M] Close", uiX + uiW - 90, uiY + 16, 11, LIGHTGRAY);
+
+        // 1. Master Volume
+        DrawText("Master Volume", uiX + 30, uiY + 95, 12, WHITE);
+        Rectangle masterSlider = { (float)uiX + 150, (float)uiY + 98, 240.0f, 10.0f };
+        DrawRectangleRec(masterSlider, DARKGRAY);
+        DrawRectangle((int)masterSlider.x, (int)masterSlider.y, (int)(masterSlider.width * masterVolume), (int)masterSlider.height, GOLD);
+        DrawCircle((int)(masterSlider.x + masterSlider.width * masterVolume), (int)masterSlider.y + 5, 8, GOLD);
+        DrawText(TextFormat("%d%%", (int)(masterVolume * 100)), uiX + 400, uiY + 95, 11, LIGHTGRAY);
+
+        // 2. SFX Volume
+        DrawText("Sound Effects", uiX + 30, uiY + 155, 12, WHITE);
+        Rectangle sfxSlider = { (float)uiX + 150, (float)uiY + 158, 240.0f, 10.0f };
+        DrawRectangleRec(sfxSlider, DARKGRAY);
+        DrawRectangle((int)sfxSlider.x, (int)sfxSlider.y, (int)(sfxSlider.width * sfxVolume), (int)sfxSlider.height, SKYBLUE);
+        DrawCircle((int)(sfxSlider.x + sfxSlider.width * sfxVolume), (int)sfxSlider.y + 5, 8, SKYBLUE);
+        DrawText(TextFormat("%d%%", (int)(sfxVolume * 100)), uiX + 400, uiY + 155, 11, LIGHTGRAY);
+
+        // 3. Music Synth Volume
+        DrawText("Music Synth", uiX + 30, uiY + 215, 12, WHITE);
+        Rectangle musicSlider = { (float)uiX + 150, (float)uiY + 218, 240.0f, 10.0f };
+        DrawRectangleRec(musicSlider, DARKGRAY);
+        DrawRectangle((int)musicSlider.x, (int)musicSlider.y, (int)(musicSlider.width * musicSynthVolume), (int)musicSlider.height, LIME);
+        DrawCircle((int)(musicSlider.x + musicSlider.width * musicSynthVolume), (int)musicSlider.y + 5, 8, LIME);
+        DrawText(TextFormat("%d%%", (int)(musicSynthVolume * 100)), uiX + 400, uiY + 215, 11, LIGHTGRAY);
+
+        // Footer Note
+        DrawText("Settings auto-saved to audio_settings.json", uiX + 30, uiY + 275, 10, GRAY);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DialogueAndTownSystem.h"
+#include "AudioManager.h"
+#include "ClassAndComboSystem.h"
+#include "AudioMixerSettings.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Audio Mixer Settings");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    AudioMixerSettingsManager audioMixer;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    audioMixer.Init();
+
+    player.pos = { 640.0f, 360.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        // Update Audio Mixer UI & Sliders
+        audioMixer.Update(dt, mousePos);
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        if (!audioMixer.isAudioMenuOpen) {
+            classMgr.Update(dt, player.pos, particles);
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+            }
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, player.pos, false, dt);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+
+        DrawText("[M] Audio Mixer", screenW - 145, 15, 11, audioMixer.isAudioMenuOpen ? GOLD : GRAY);
+
+        audioMixer.DrawAudioMixerUI(screenW, screenH, mousePos);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
