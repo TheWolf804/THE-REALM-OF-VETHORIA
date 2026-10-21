@@ -1,0 +1,111 @@
+name: Vethoria CI/CD - Native & WASM Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  # ==========================================
+  # JOB 1: Build Native Desktop Executable
+  # ==========================================
+  build-native:
+    name: Build Native (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Raylib & Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libraylib-dev libgl1-mesa-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libwayland-dev libxkbcommon-dev
+
+      - name: Configure CMake Native
+        run: cmake -B build_native -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Native Binaries
+        run: cmake --build build_native --config Release -j$(nproc)
+
+      - name: Archive Native Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vethoria-native-linux
+          path: build_native/vethoria
+
+  # ==========================================
+  # JOB 2: Build WebAssembly (Emscripten)
+  # ==========================================
+  build-wasm:
+    name: Build WebAssembly (WASM)
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:3.1.56
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure CMake with Emscripten
+        run: |
+          mkdir -p build_wasm
+          cd build_wasm
+          emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile WASM Target
+        run: |
+          cd build_wasm
+          emmake make -j$(nproc)
+
+      - name: Prepare GitHub Pages Distribution Folder
+        run: |
+          mkdir -p dist
+          cp build_wasm/vethoria.html dist/index.html
+          cp build_wasm/vethoria.js dist/vethoria.js
+          cp build_wasm/vethoria.wasm dist/vethoria.wasm
+          if [ -d "assets" ]; then cp -r assets dist/; fi
+
+      - name: Upload WASM Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vethoria-wasm-distribution
+          path: dist/
+
+  # ==========================================
+  # JOB 3: Deploy to GitHub Pages
+  # ==========================================
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Download WASM Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vethoria-wasm-distribution
+          path: dist
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Artifact for GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'dist'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
