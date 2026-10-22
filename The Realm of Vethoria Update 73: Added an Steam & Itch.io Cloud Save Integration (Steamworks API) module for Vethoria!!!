@@ -1,0 +1,224 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <string>
+#include <fstream>
+#include <iostream>
+
+// Preprocessor guard for Steamworks SDK integration
+#if __has_include("steam/steam_api.h")
+#include "steam/steam_api.h"
+#define STEAMWORKS_ENABLED 1
+#else
+#define STEAMWORKS_ENABLED 0
+#endif
+
+class SteamCloudSaveManager {
+public:
+    bool isSteamInitialized = false;
+    bool isCloudSyncActive = true;
+    std::string lastSyncStatus = "Not Initialized";
+    float syncStatusTimer = 0.0f;
+
+    void InitSteamworks() {
+#if STEAMWORKS_ENABLED
+        if (SteamAPI_Init()) {
+            isSteamInitialized = true;
+            lastSyncStatus = "Steam API Initialized - Cloud Active";
+            std::cout << "[Steamworks] Initialized successfully." << std::endl;
+        } else {
+            lastSyncStatus = "Steam API Init Failed - Using Local Fallback";
+            std::cout << "[Steamworks] Failed to initialize Steam API." << std::endl;
+        }
+#else
+        isSteamInitialized = false;
+        lastSyncStatus = "Steam SDK Not Found - Local Storage Mode";
+#endif
+    }
+
+    void Update(float dt) {
+#if STEAMWORKS_ENABLED
+        if (isSteamInitialized) {
+            SteamAPI_RunCallbacks();
+        }
+#endif
+        if (syncStatusTimer > 0.0f) {
+            syncStatusTimer -= dt;
+        }
+    }
+
+    bool SaveGameData(const std::string& filename, const std::string& jsonData) {
+#if STEAMWORKS_ENABLED
+        if (isSteamInitialized && isCloudSyncActive) {
+            // Use Steam Remote Storage API
+            int dataSize = (int)jsonData.size();
+            bool success = SteamRemoteStorage()->FileWrite(filename.c_str(), jsonData.data(), dataSize);
+            if (success) {
+                lastSyncStatus = "Synced to Steam Cloud: " + filename;
+                syncStatusTimer = 4.0f;
+                return true;
+            } else {
+                lastSyncStatus = "Steam Cloud Write Failed!";
+                syncStatusTimer = 4.0f;
+            }
+        }
+#endif
+        // Fallback to Local Filesystem / IDBFS
+        std::ofstream file(filename);
+        if (file.is_open()) {
+            file << jsonData;
+            file.close();
+            lastSyncStatus = "Saved Locally: " + filename;
+            syncStatusTimer = 4.0f;
+            return true;
+        }
+
+        lastSyncStatus = "Save Failed!";
+        syncStatusTimer = 4.0f;
+        return false;
+    }
+
+    bool LoadGameData(const std::string& filename, std::string& outJsonData) {
+#if STEAMWORKS_ENABLED
+        if (isSteamInitialized && isCloudSyncActive) {
+            if (SteamRemoteStorage()->FileExists(filename.c_str())) {
+                int32 fileSize = SteamRemoteStorage()->GetFileSize(filename.c_str());
+                if (fileSize > 0) {
+                    std::vector<char> buffer(fileSize);
+                    int32 bytesRead = SteamRemoteStorage()->FileRead(filename.c_str(), buffer.data(), fileSize);
+                    if (bytesRead > 0) {
+                        outJsonData = std::string(buffer.begin(), buffer.end());
+                        lastSyncStatus = "Loaded from Steam Cloud";
+                        syncStatusTimer = 4.0f;
+                        return true;
+                    }
+                }
+            }
+        }
+#endif
+        // Fallback to Local Filesystem
+        std::ifstream file(filename);
+        if (file.is_open()) {
+            std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+            outJsonData = content;
+            file.close();
+            lastSyncStatus = "Loaded Locally";
+            syncStatusTimer = 4.0f;
+            return true;
+        }
+
+        lastSyncStatus = "No Save Found";
+        syncStatusTimer = 4.0f;
+        return false;
+    }
+
+    void DrawCloudSyncHUD(int screenW) {
+        if (syncStatusTimer <= 0.0f) return;
+
+        int boxW = 340, boxH = 32;
+        int boxX = (screenW - boxW) / 2;
+        int boxY = 65;
+
+        DrawRectangle(boxX, boxY, boxW, boxH, ColorAlpha(BLACK, 0.85f));
+        DrawRectangleLines(boxX, boxY, boxW, boxH, SKYBLUE);
+
+        DrawText(lastSyncStatus.c_str(), boxX + 12, boxY + 10, 10, SKYBLUE);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DialogueAndTownSystem.h"
+#include "AudioManager.h"
+#include "ClassAndComboSystem.h"
+#include "SteamCloudSaveSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Steam Cloud Save Integration");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    SteamCloudSaveManager cloudSave;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    cloudSave.InitSteamworks();
+
+    player.pos = { 640.0f, 360.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        cloudSave.Update(dt);
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+            classMgr.TriggerAttack(player.pos, aimDir);
+        }
+
+        // Test Save with Key 'S' and Load with Key 'L'
+        if (IsKeyPressed(KEY_S)) {
+            std::string sampleSave = TextFormat("{\"player_gold\": %d, \"player_hp\": %.1f}", player.gold, player.health);
+            cloudSave.SaveGameData("vethoria_save.dat", sampleSave);
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, player.pos, false, dt);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        cloudSave.DrawCloudSyncHUD(screenW);
+
+        DrawText("[S] Save Game to Steam Cloud", screenW - 220, 15, 11, SKYBLUE);
+
+        EndDrawing();
+    }
+
+#if STEAMWORKS_ENABLED
+    if (cloudSave.isSteamInitialized) {
+        SteamAPI_Shutdown();
+    }
+#endif
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
