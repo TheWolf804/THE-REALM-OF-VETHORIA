@@ -1,0 +1,308 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <cstdlib>
+
+enum BountyType {
+    BOUNTY_SLAY_UNDEAD = 0,
+    BOUNTY_SLAY_ELITES,
+    BOUNTY_CLEAR_FLOOR,
+    BOUNTY_DEFEAT_BOSS
+};
+
+struct ProceduralBounty {
+    int id;
+    std::string title;
+    std::string description;
+    BountyType type;
+    int currentProgress = 0;
+    int targetGoal = 1;
+    int targetFloor = 1;
+    int rewardGold = 100;
+    int rewardSouls = 1;
+    bool isAccepted = false;
+    bool isCompleted = false;
+    bool isClaimed = false;
+};
+
+class BountyBoardSystemManager {
+public:
+    bool isBoardUIOpen = false;
+    std::vector<ProceduralBounty> activeBounties;
+
+    void GenerateFreshBounties(int playerLevel) {
+        activeBounties.clear();
+
+        const std::vector<std::string> prefixes = { "Purge the", "Halt the", "Exterminate", "Vanquish the", "Hunt down" };
+        const std::vector<std::string> targetNames = { "Crypt Stalkers", "Necrotic Abominations", "Infernal Elites", "Subterranean Mobs" };
+
+        for (int i = 0; i < 3; i++) {
+            ProceduralBounty bounty;
+            bounty.id = GetRandomValue(1000, 9999);
+            bounty.type = (BountyType)GetRandomValue(0, 3);
+            bounty.isAccepted = false;
+            bounty.isCompleted = false;
+            bounty.isClaimed = false;
+            bounty.currentProgress = 0;
+
+            switch (bounty.type) {
+                case BOUNTY_SLAY_UNDEAD:
+                    bounty.targetGoal = GetRandomValue(8, 20);
+                    bounty.title = TextFormat("%s %s", prefixes[GetRandomValue(0, prefixes.size() - 1)].c_str(), targetNames[0].c_str());
+                    bounty.description = TextFormat("Slay %d Crypt Stalkers lurking in the Sunken Crypts.", bounty.targetGoal);
+                    bounty.rewardGold = 150 + bounty.targetGoal * 15;
+                    bounty.rewardSouls = 2;
+                    break;
+                case BOUNTY_SLAY_ELITES:
+                    bounty.targetGoal = GetRandomValue(3, 6);
+                    bounty.title = "Elite Extermination";
+                    bounty.description = TextFormat("Defeat %d Elite monsters possessing dangerous affixes.", bounty.targetGoal);
+                    bounty.rewardGold = 300 + bounty.targetGoal * 40;
+                    bounty.rewardSouls = 4;
+                    break;
+                case BOUNTY_CLEAR_FLOOR:
+                    bounty.targetFloor = GetRandomValue(2, 8);
+                    bounty.targetGoal = 1;
+                    bounty.title = TextFormat("Floor %d Expedition", bounty.targetFloor);
+                    bounty.description = TextFormat("Descend to Floor %d in the subterranean dungeons.", bounty.targetFloor);
+                    bounty.rewardGold = 250 + bounty.targetFloor * 50;
+                    bounty.rewardSouls = 3;
+                    break;
+                case BOUNTY_DEFEAT_BOSS:
+                    bounty.targetGoal = 1;
+                    bounty.title = "Malgor Assasination";
+                    bounty.description = "Vanquish Malgor, Lord of Decay in Act II.";
+                    bounty.rewardGold = 600;
+                    bounty.rewardSouls = 8;
+                    break;
+            }
+
+            activeBounties.push_back(bounty);
+        }
+    }
+
+    void NotifyProgress(BountyType type, int amount = 1, int floorReached = 0) {
+        for (auto& bounty : activeBounties) {
+            if (!bounty.isAccepted || bounty.isCompleted) continue;
+
+            if (bounty.type == type) {
+                if (type == BOUNTY_CLEAR_FLOOR) {
+                    if (floorReached >= bounty.targetFloor) {
+                        bounty.currentProgress = 1;
+                        bounty.isCompleted = true;
+                    }
+                } else {
+                    bounty.currentProgress += amount;
+                    if (bounty.currentProgress >= bounty.targetGoal) {
+                        bounty.currentProgress = bounty.targetGoal;
+                        bounty.isCompleted = true;
+                    }
+                }
+            }
+        }
+    }
+
+    void DrawBountyTrackerHUD(int screenW) {
+        int startY = 180;
+        bool hasTracked = false;
+
+        for (const auto& bounty : activeBounties) {
+            if (!bounty.isAccepted || bounty.isClaimed) continue;
+
+            if (!hasTracked) {
+                DrawRectangle(screenW - 240, startY - 20, 220, 20, ColorAlpha(BLACK, 0.8f));
+                DrawText("ACTIVE BOUNTIES", screenW - 230, startY - 16, 10, GOLD);
+                hasTracked = true;
+            }
+
+            DrawRectangle(screenW - 240, startY, 220, 42, ColorAlpha(BLACK, 0.75f));
+            DrawRectangleLines(screenW - 240, startY, 220, 42, bounty.isCompleted ? GREEN : DARKGRAY);
+
+            DrawText(bounty.title.c_str(), screenW - 230, startY + 6, 10, WHITE);
+
+            if (bounty.isCompleted) {
+                DrawText("COMPLETE! Turn in at board.", screenW - 230, startY + 22, 9, GREEN);
+            } else {
+                DrawText(TextFormat("Progress: %d / %d", bounty.currentProgress, bounty.targetGoal), screenW - 230, startY + 22, 9, SKYBLUE);
+            }
+
+            startY += 48;
+        }
+    }
+
+    void DrawBountyBoardUI(int screenW, int screenH, int& playerGold, int& playerSouls, Vector2 mousePos) {
+        if (!isBoardUIOpen) return;
+
+        int uiW = 680, uiH = 440;
+        int uiX = (screenW - uiW) / 2;
+        int uiY = (screenH - uiH) / 2;
+
+        DrawRectangle(0, 0, screenW, screenH, ColorAlpha(BLACK, 0.75f));
+        DrawRectangle(uiX, uiY, uiW, uiH, GetColor(0x12121DFF));
+        DrawRectangleLines(uiX, uiY, uiW, uiH, GOLD);
+
+        // Header
+        DrawRectangle(uiX, uiY, uiW, 45, GetColor(0x1B1B2AFF));
+        DrawText("TOWN BOUNTY & QUEST BOARD", uiX + 20, uiY + 14, 15, GOLD);
+        DrawText("[B] Close Board", uiX + uiW - 130, uiY + 16, 11, LIGHTGRAY);
+
+        int itemY = uiY + 65;
+        for (size_t i = 0; i < activeBounties.size(); i++) {
+            auto& bounty = activeBounties[i];
+            Rectangle itemRec = { (float)uiX + 20, (float)itemY, 640.0f, 95.0f };
+
+            DrawRectangleRec(itemRec, GetColor(0x1A1A28FF));
+            DrawRectangleLinesEx(itemRec, 1.0f, bounty.isCompleted ? GREEN : (bounty.isAccepted ? SKYBLUE : DARKGRAY));
+
+            DrawText(bounty.title.c_str(), (int)itemRec.x + 15, (int)itemRec.y + 12, 13, GOLD);
+            DrawText(bounty.description.c_str(), (int)itemRec.x + 15, (int)itemRec.y + 32, 11, LIGHTGRAY);
+
+            DrawText(TextFormat("Rewards: +%d Gold  |  +%d Boss Souls", bounty.rewardGold, bounty.rewardSouls), (int)itemRec.x + 15, (int)itemRec.y + 65, 11, GREEN);
+
+            // Action Button
+            Rectangle btnRec = { (float)itemRec.x + 500, (float)itemRec.y + 30, 120.0f, 35.0f };
+            bool isHovered = CheckCollisionPointRec(mousePos, btnRec);
+
+            if (!bounty.isAccepted) {
+                DrawRectangleRec(btnRec, isHovered ? GetColor(0x282840FF) : GetColor(0x1C1C2CFF));
+                DrawRectangleLinesEx(btnRec, 1.0f, GOLD);
+                DrawText("Accept", (int)btnRec.x + 38, (int)btnRec.y + 11, 11, WHITE);
+
+                if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    bounty.isAccepted = true;
+                }
+            } else if (bounty.isCompleted && !bounty.isClaimed) {
+                DrawRectangleRec(btnRec, isHovered ? GREEN : GetColor(0x183018FF));
+                DrawRectangleLinesEx(btnRec, 1.0f, GREEN);
+                DrawText("Claim Reward", (int)btnRec.x + 20, (int)btnRec.y + 11, 11, WHITE);
+
+                if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    playerGold += bounty.rewardGold;
+                    playerSouls += bounty.rewardSouls;
+                    bounty.isClaimed = true;
+                }
+            } else if (bounty.isClaimed) {
+                DrawRectangleRec(btnRec, GetColor(0x14141CFF));
+                DrawRectangleLinesEx(btnRec, 1.0f, DARKGRAY);
+                DrawText("Claimed", (int)btnRec.x + 36, (int)btnRec.y + 11, 11, GRAY);
+            } else {
+                DrawRectangleRec(btnRec, GetColor(0x181824FF));
+                DrawRectangleLinesEx(btnRec, 1.0f, SKYBLUE);
+                DrawText(TextFormat("%d / %d", bounty.currentProgress, bounty.targetGoal), (int)btnRec.x + 40, (int)btnRec.y + 11, 11, SKYBLUE);
+            }
+
+            itemY += 110;
+        }
+
+        // Refresh Bounties Button
+        Rectangle refreshBtn = { (float)uiX + 20, (float)uiY + uiH - 45, 160.0f, 32.0f };
+        bool refHover = CheckCollisionPointRec(mousePos, refreshBtn);
+        DrawRectangleRec(refreshBtn, refHover ? GetColor(0x282840FF) : GetColor(0x1A1A28FF));
+        DrawRectangleLinesEx(refreshBtn, 1.0f, GOLD);
+        DrawText("Reroll Bounties", (int)refreshBtn.x + 30, (int)refreshBtn.y + 10, 11, WHITE);
+
+        if (refHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            GenerateFreshBounties(1);
+        }
+    }#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DialogueAndTownSystem.h"
+#include "AudioManager.h"
+#include "ClassAndComboSystem.h"
+#include "BountyBoardSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Procedural Bounty Board");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    BountyBoardSystemManager bountyBoard;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    bountyBoard.GenerateFreshBounties(1);
+
+    player.pos = { 640.0f, 360.0f };
+    int playerSouls = 5;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        // Toggle Bounty Board UI with Key 'B'
+        if (IsKeyPressed(KEY_B)) {
+            bountyBoard.isBoardUIOpen = !bountyBoard.isBoardUIOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        if (!bountyBoard.isBoardUIOpen) {
+            classMgr.Update(dt, player.pos, particles);
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+
+                // Simulate Bounty Kill Notification on Attack for Testing
+                if (GetRandomValue(0, 100) < 15) {
+                    bountyBoard.NotifyProgress(BOUNTY_SLAY_UNDEAD, 1);
+                }
+            }
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, player.pos, false, dt);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        bountyBoard.DrawBountyTrackerHUD(screenW);
+
+        DrawText("[B] Town Bounty Board", screenW - 170, 15, 11, GOLD);
+
+        bountyBoard.DrawBountyBoardUI(screenW, screenH, player.gold, playerSouls, mousePos);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+
+};
