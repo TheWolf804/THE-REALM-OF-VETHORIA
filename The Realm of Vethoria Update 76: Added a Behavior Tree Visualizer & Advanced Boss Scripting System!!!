@@ -1,0 +1,330 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <memory>
+
+enum NodeStatus {
+    NODE_FAILURE = 0,
+    NODE_SUCCESS,
+    NODE_RUNNING
+};
+
+enum NodeType {
+    NODE_SELECTOR,
+    NODE_SEQUENCE,
+    NODE_CONDITION,
+    NODE_ACTION
+};
+
+class BTNode {
+public:
+    std::string name;
+    NodeType type;
+    NodeStatus lastStatus = NODE_FAILURE;
+    std::vector<std::shared_ptr<BTNode>> children;
+
+    BTNode(const std::string& name, NodeType type) : name(name), type(type) {}
+
+    virtual NodeStatus Tick(float dt, Vector2 bossPos, Vector2 playerPos, float bossHpRatio) {
+        return NODE_SUCCESS;
+    }
+
+    void AddChild(std::shared_ptr<BTNode> child) {
+        children.push_back(child);
+    }
+};
+
+// Composite Selector Node (Succeeds if any child succeeds)
+class BTSelector : public BTNode {
+public:
+    BTSelector(const std::string& name) : BTNode(name, NODE_SELECTOR) {}
+
+    NodeStatus Tick(float dt, Vector2 bossPos, Vector2 playerPos, float bossHpRatio) override {
+        for (auto& child : children) {
+            NodeStatus status = child->Tick(dt, bossPos, playerPos, bossHpRatio);
+            if (status != NODE_FAILURE) {
+                lastStatus = status;
+                return status;
+            }
+        }
+        lastStatus = NODE_FAILURE;
+        return NODE_FAILURE;
+    }
+};
+
+// Composite Sequence Node (Succeeds only if all children succeed)
+class BTSequence : public BTNode {
+public:
+    BTSequence(const std::string& name) : BTNode(name, NODE_SEQUENCE) {}
+
+    NodeStatus Tick(float dt, Vector2 bossPos, Vector2 playerPos, float bossHpRatio) override {
+        for (auto& child : children) {
+            NodeStatus status = child->Tick(dt, bossPos, playerPos, bossHpRatio);
+            if (status != NODE_SUCCESS) {
+                lastStatus = status;
+                return status;
+            }
+        }
+        lastStatus = NODE_SUCCESS;
+        return NODE_SUCCESS;
+    }
+};
+
+// Condition Check Node
+class BTCondition : public BTNode {
+public:
+    typedef bool (*ConditionFunc)(float hpRatio, float distToPlayer);
+    ConditionFunc condition;
+
+    BTCondition(const std::string& name, ConditionFunc cond) : BTNode(name, NODE_CONDITION), condition(cond) {}
+
+    NodeStatus Tick(float dt, Vector2 bossPos, Vector2 playerPos, float bossHpRatio) override {
+        float dist = Vector2Distance(bossPos, playerPos);
+        bool result = condition ? condition(bossHpRatio, dist) : false;
+        lastStatus = result ? NODE_SUCCESS : NODE_FAILURE;
+        return lastStatus;
+    }
+};
+
+// Action Node
+class BTAction : public BTNode {
+public:
+    std::string actionMessage;
+    float cooldown = 0.0f;
+    float currentCooldown = 0.0f;
+
+    BTAction(const std::string& name, const std::string& msg, float cd)
+        : BTNode(name, NODE_ACTION), actionMessage(msg), cooldown(cd) {}
+
+    NodeStatus Tick(float dt, Vector2 bossPos, Vector2 playerPos, float bossHpRatio) override {
+        if (currentCooldown > 0.0f) {
+            currentCooldown -= dt;
+            lastStatus = NODE_FAILURE;
+            return NODE_FAILURE;
+        }
+
+        currentCooldown = cooldown;
+        lastStatus = NODE_SUCCESS;
+        return NODE_SUCCESS;
+    }
+};
+
+class BehaviorTreeManager {
+public:
+    bool isVisualizerOpen = false;
+    std::shared_ptr<BTNode> rootNode;
+    std::string currentExecutingAction = "Idle / Scanning";
+
+    void InitMalgorBehaviorTree() {
+        // Root Selector
+        auto root = std::make_shared<BTSelector>("Malgor Root AI");
+
+        // Sequence 1: Desperation Phase (< 30% HP) -> Poison Wave
+        auto seqDesperation = std::make_shared<BTSequence>("Phase 3: Desperation");
+        auto condLowHp = std::make_shared<BTCondition>("HP < 30%?", [](float hp, float d) { return hp < 0.30f; });
+        auto actPoisonWave = std::make_shared<BTAction>("Cast Toxic Nova", "Malgor casts 360 Poison Wave!", 2.5f);
+        seqDesperation->AddChild(condLowHp);
+        seqDesperation->AddChild(actPoisonWave);
+
+        // Sequence 2: Melee Range Attack (< 120px) -> Cleave Strike
+        auto seqMelee = std::make_shared<BTSequence>("Phase 2: Melee Cleave");
+        auto condInMelee = std::make_shared<BTCondition>("Player In Range?", [](float hp, float d) { return d < 140.0f; });
+        auto actCleave = std::make_shared<BTAction>("Necrotic Cleave", "Malgor swings Necrotic Scythe!", 1.8f);
+        seqMelee->AddChild(condInMelee);
+        seqMelee->AddChild(actCleave);
+
+        // Sequence 3: Minion Summoning
+        auto seqSummon = std::make_shared<BTSequence>("Phase 1: Minion Summon");
+        auto condSummonHp = std::make_shared<BTCondition>("HP < 75%?", [](float hp, float d) { return hp < 0.75f; });
+        auto actSummon = std::make_shared<BTAction>("Summon Stalkers", "Malgor summons Crypt Stalkers!", 5.0f);
+        seqSummon->AddChild(condSummonHp);
+        seqSummon->AddChild(actSummon);
+
+        root->AddChild(seqDesperation);
+        root->AddChild(seqMelee);
+        root->AddChild(seqSummon);
+
+        rootNode = root;
+    }
+
+    void Update(float dt, Vector2 bossPos, Vector2 playerPos, float bossHpRatio) {
+        if (IsKeyPressed(KEY_F2)) {
+            isVisualizerOpen = !isVisualizerOpen;
+        }
+
+        if (rootNode) {
+            rootNode->Tick(dt, bossPos, playerPos, bossHpRatio);
+        }
+    }
+
+    void DrawNodeUI(const std::shared_ptr<BTNode>& node, int x, int y, int level) {
+        if (!node) return;
+
+        Color bgCol = GetColor(0x1C1C2CFF);
+        Color borderCol = DARKGRAY;
+
+        if (node->lastStatus == NODE_SUCCESS) {
+            borderCol = LIME;
+            bgCol = GetColor(0x1B381BFF);
+        } else if (node->lastStatus == NODE_RUNNING) {
+            borderCol = GOLD;
+            bgCol = GetColor(0x38381BFF);
+        } else if (node->lastStatus == NODE_FAILURE) {
+            borderCol = RED;
+        }
+
+        int boxW = 180, boxH = 26;
+        DrawRectangle(x, y, boxW, boxH, bgCol);
+        DrawRectangleLines(x, y, boxW, boxH, borderCol);
+
+        const char* typeTag = (node->type == NODE_SELECTOR) ? "[SEL]" :
+                             ((node->type == NODE_SEQUENCE) ? "[SEQ]" :
+                             ((node->type == NODE_CONDITION) ? "[CND]" : "[ACT]"));
+
+        DrawText(TextFormat("%s %s", typeTag, node->name.c_str()), x + 8, y + 7, 10, WHITE);
+
+        // Render Children Vertically Indented
+        int childY = y + 32;
+        for (const auto& child : node->children) {
+            DrawLine(x + 20, y + boxH, x + 20, childY + 13, borderCol);
+            DrawLine(x + 20, childY + 13, x + 35, childY + 13, borderCol);
+            DrawNodeUI(child, x + 35, childY, level + 1);
+            childY += 160; // Offset spacing for subtrees
+        }
+    }
+
+    void DrawVisualizerOverlay(int screenW, int screenH, float bossHp, float bossMaxHp, Vector2 bossPos, Vector2 playerPos) {
+        if (!isVisualizerOpen) return;
+
+        int panelW = 380, panelH = 500;
+        int panelX = screenW - panelW - 15;
+        int panelY = 50;
+
+        DrawRectangle(panelX, panelY, panelW, panelH, ColorAlpha(GetColor(0x0E0E16FF), 0.92f));
+        DrawRectangleLines(panelX, panelY, panelW, panelH, LIME);
+
+        // Header
+        DrawRectangle(panelX, panelY, panelW, 35, GetColor(0x182818FF));
+        DrawText("BEHAVIOR TREE DEBUG VISUALIZER", panelX + 15, panelY + 11, 11, LIME);
+        DrawText("[F2] Close", panelX + panelW - 75, panelY + 12, 10, LIGHTGRAY);
+
+        // Live Variables
+        float hpRatio = bossHp / bossMaxHp;
+        float dist = Vector2Distance(bossPos, playerPos);
+        DrawText(TextFormat("Boss Health: %.0f / %.0f (%.1f%%)", bossHp, bossMaxHp, hpRatio * 100.0f), panelX + 15, panelY + 48, 10, WHITE);
+        DrawText(TextFormat("Player Distance: %.1f px", dist), panelX + 15, panelY + 64, 10, SKYBLUE);
+
+        DrawLine(panelX + 15, panelY + 84, panelX + panelW - 15, panelY + 84, DARKGRAY);
+
+        // Tree Graph Rendering
+        if (rootNode) {
+            DrawNodeUI(rootNode, panelX + 15, panelY + 95, 0);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DialogueAndTownSystem.h"
+#include "AudioManager.h"
+#include "ClassAndComboSystem.h"
+#include "BehaviorTreeVisualizer.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Behavior Tree Visualizer & Boss AI");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    BehaviorTreeManager btMgr;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    btMgr.InitMalgorBehaviorTree();
+
+    player.pos = { 640.0f, 360.0f };
+    Vector2 bossPos = { 800.0f, 360.0f };
+    float bossHp = 1200.0f;
+    float bossMaxHp = 1800.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        // Tick Boss Behavior Tree Engine
+        btMgr.Update(dt, bossPos, player.pos, bossHp / bossMaxHp);
+
+        if (!btMgr.isVisualizerOpen) {
+            classMgr.Update(dt, player.pos, particles);
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+
+                // Reduce Boss HP on Hit for AI Phase Testing
+                if (Vector2Distance(player.pos, bossPos) < 120.0f) {
+                    bossHp = std::max(0.0f, bossHp - 150.0f);
+                }
+            }
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, bossPos, true, dt);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+
+                // Render Malgor Boss
+                DrawCircleV(bossPos, 35.0f, DARKGREEN);
+                DrawCircleLines((int)bossPos.x, (int)bossPos.y, 37.0f, LIME);
+                DrawText("Malgor, Lord of Decay", (int)bossPos.x - 60, (int)bossPos.y - 50, 11, LIME);
+
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.DrawLight(bossPos, 280.0f, LIME, 0.7f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+
+        DrawText("[F2] Behavior Tree Debugger", screenW - 200, 15, 11, LIME);
+
+        btMgr.DrawVisualizerOverlay(screenW, screenH, bossHp, bossMaxHp, bossPos, player.pos);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
