@@ -1,0 +1,219 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <string>
+#include <map>
+#include <fstream>
+
+enum LanguageCode {
+    LANG_EN = 0,
+    LANG_ES,
+    LANG_DE,
+    LANG_FR,
+    LANG_JA
+};
+
+class StoreAndPolishManager {
+public:
+    // Cinematic Trailer Fly-Through State
+    bool isTrailerModeActive = false;
+    float trailerTimer = 0.0f;
+    std::vector<Vector2> trailerWaypoints = {
+        { 640.0f, 360.0f },
+        { 1200.0f, 400.0f },
+        { 800.0f, 900.0f },
+        { 300.0f, 600.0f }
+    };
+
+    // Localization Dictionary
+    LanguageCode currentLang = LANG_EN;
+    std::map<LanguageCode, std::map<std::string, std::string>> localizedStrings;
+
+    void InitLocalization() {
+        // English
+        localizedStrings[LANG_EN]["title"] = "Vethoria: Action RPG";
+        localizedStrings[LANG_EN]["play"] = "Enter Dungeon";
+        localizedStrings[LANG_EN]["settings"] = "Audio Mixer";
+        localizedStrings[LANG_EN]["bounty"] = "Town Bounty Board";
+
+        // Spanish
+        localizedStrings[LANG_ES]["title"] = "Vethoria: Rol de Accion";
+        localizedStrings[LANG_ES]["play"] = "Entrar a la Mazmorra";
+        localizedStrings[LANG_ES]["settings"] = "Mezclador de Audio";
+        localizedStrings[LANG_ES]["bounty"] = "Tablon de Recompensas";
+
+        // German
+        localizedStrings[LANG_DE]["title"] = "Vethoria: Action-Rollenspiel";
+        localizedStrings[LANG_DE]["play"] = "Dungeon Betreten";
+        localizedStrings[LANG_DE]["settings"] = "Audio-Mischer";
+        localizedStrings[LANG_DE]["bounty"] = "Kopfgeldtafel";
+
+        // French
+        localizedStrings[LANG_FR]["title"] = "Vethoria: Jeu de Role d'Action";
+        localizedStrings[LANG_FR]["play"] = "Entrer dans le Donjon";
+        localizedStrings[LANG_FR]["settings"] = "Mixeur Audio";
+        localizedStrings[LANG_FR]["bounty"] = "Tableau des Primes";
+
+        // Japanese
+        localizedStrings[LANG_JA]["title"] = "ヴェソリア: アクションRPG";
+        localizedStrings[LANG_JA]["play"] = "ダンジョンに入る";
+        localizedStrings[LANG_JA]["settings"] = "オーディオミキサー";
+        localizedStrings[LANG_JA]["bounty"] = "賞金首掲示板";
+    }
+
+    std::string GetText(const std::string& key) {
+        if (localizedStrings[currentLang].count(key) > 0) {
+            return localizedStrings[currentLang][key];
+        }
+        return localizedStrings[LANG_EN][key];
+    }
+
+    void Update(float dt, Camera2D& camera) {
+        // Toggle Cinematic Trailer Fly-Through with F3
+        if (IsKeyPressed(KEY_F3)) {
+            isTrailerModeActive = !isTrailerModeActive;
+            trailerTimer = 0.0f;
+        }
+
+        // Toggle Language with F4
+        if (IsKeyPressed(KEY_F4)) {
+            currentLang = (LanguageCode)((currentLang + 1) % 5);
+        }
+
+        if (isTrailerModeActive) {
+            trailerTimer += dt * 0.3f; // Speed of pan
+            int idx = (int)trailerTimer % trailerWaypoints.size();
+            int nextIdx = (idx + 1) % trailerWaypoints.size();
+            float t = trailerTimer - (int)trailerTimer;
+
+            Vector2 target = Vector2Lerp(trailerWaypoints[idx], trailerWaypoints[nextIdx], t);
+            camera.target = Vector2Lerp(camera.target, target, 5.0f * dt);
+        }
+    }
+
+    void ExportStoreMetadata() {
+        std::ofstream file("steam_store_description.txt");
+        if (!file.is_open()) return;
+
+        file << "=== VETHORIA: ACTION RPG ===" << "\n\n";
+        file << "About the Game:\n";
+        file << "Vethoria is a feature-rich, cross-platform Action RPG featuring persistent meta-progression, ";
+        file << "procedural dungeon generation, multi-class combat depth, and endless horde survival modes.\n\n";
+        file << "Key Features:\n";
+        file << "- 4 Biomes: Catacombs, Lava Caverns, Ice Vaults, and Sunken Crypts.\n";
+        file << "- Multi-Class Combat: Warrior, Rogue, and Elementalist with 3-hit combo chains.\n";
+        file << "- The Crucible: Endless horde survival mode with roguelike perk cards.\n";
+        file << "- P2P Co-Op Multiplayer: Host and join sessions with 20Hz state synchronization.\n";
+        file.close();
+    }
+
+    void DrawStorePolishHUD(int screenW, int screenH) {
+        if (isTrailerModeActive) {
+            // Cinematic Letterbox for Trailer
+            DrawRectangle(0, 0, screenW, 70, BLACK);
+            DrawRectangle(0, screenH - 70, screenW, 70, BLACK);
+            DrawText("REC [TRAILER CINEMATIC MODE - F3 TO EXIT]", (screenW - MeasureText("REC [TRAILER CINEMATIC MODE - F3 TO EXIT]", 12)) / 2, 28, 12, RED);
+        }
+
+        // Language Indicator
+        const char* langNames[] = { "ENG", "ESP", "DEU", "FRA", "JPN" };
+        DrawRectangle(15, screenH - 45, 110, 30, ColorAlpha(BLACK, 0.8f));
+        DrawRectangleLines(15, screenH - 45, 110, 30, GOLD);
+        DrawText(TextFormat("Lang: [%s] (F4)", langNames[currentLang]), 23, screenH - 37, 10, GOLD);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DialogueAndTownSystem.h"
+#include "AudioManager.h"
+#include "ClassAndComboSystem.h"
+#include "StoreAndPolishSystem.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Steam Store & Localization Suite");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    StoreAndPolishManager storePolish;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    storePolish.InitLocalization();
+    storePolish.ExportStoreMetadata(); // Generates store description file
+
+    player.pos = { 640.0f, 360.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        // Update Trailer Camera & Localization
+        storePolish.Update(dt, cameraMgr.camera);
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        if (!storePolish.isTrailerModeActive) {
+            classMgr.Update(dt, player.pos, particles);
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+            }
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+        
+        if (!storePolish.isTrailerModeActive) {
+            cameraMgr.Update(player.pos, player.pos, false, dt);
+        }
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, screenW, screenH);
+
+        // HUD & Overlays (Localized)
+        player.DrawHUD();
+        classMgr.DrawClassAndAbilityHUD(screenW, screenH);
+        storePolish.DrawStorePolishHUD(screenW, screenH);
+
+        // Render Localized Button Prompts
+        DrawText(storePolish.GetText("play").c_str(), 15, 15, 14, GOLD);
+        DrawText("[F3] Trailer Mode | [F4] Switch Language", screenW - 310, 15, 11, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
