@@ -1,0 +1,9 @@
+SOURCE CODE (C++17)
+          │
+          ├──> [ Native Desktop CMake ] ──> Linux / Windows / macOS Binary
+          │
+          └──> [ Emscripten Toolchain ] ──> WebAssembly (.wasm / .js / .html)
+                                                      │
+                                                      └──> GitHub Actions CI/CD
+                                                                │
+                                                                └──> Live GitHub Pages
