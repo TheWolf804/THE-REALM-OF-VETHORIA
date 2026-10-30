@@ -1,0 +1,177 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <vector>
+#include <algorithm>
+#include <deque>
+#include <iostream>
+
+#if defined(PLATFORM_WEB) || defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+#endif
+
+// Fix Issue 3: P2P Snapshot Jitter Dampening Struct
+struct NetworkSnapshot {
+    uint32_t sequenceNumber;
+    float timestamp;
+    Vector2 playerPos;
+    float playerHp;
+};
+
+class EngineBugFixesManager {
+public:
+    // Snapshot Jitter Buffer
+    std::deque<NetworkSnapshot> snapshotBuffer;
+    const size_t MAX_SNAPSHOT_BUFFER_SIZE = 5;
+    float renderDelaySeconds = 0.05f; // 50ms jitter buffer
+
+    void InitEnginePatches() {
+        std::cout << "[BugFixes] Engine patch pipeline initialized." << std::endl;
+        
+#if defined(PLATFORM_WEB) || defined(__EMSCRIPTEN__)
+        // Fix Issue 2: WebAssembly Canvas Resize Handling
+        emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, false, 
+            [](int eventType, const EmscriptenUiEvent *uiEvent, void *userData) -> EM_BOOL {
+                int windowW = uiEvent->windowInnerWidth;
+                int windowH = uiEvent->windowInnerHeight;
+                SetWindowSize(windowW, windowH);
+                return EM_TRUE;
+            });
+#endif
+    }
+
+    // Fix Issue 1: Particle Pool Bounds Sanitization
+    template<typename ParticleContainer>
+    void SanitizeParticlePool(ParticleContainer& particlePool, size_t maxAllowedParticles = 1000) {
+        if (particlePool.size() > maxAllowedParticles) {
+            particlePool.resize(maxAllowedParticles);
+        }
+    }
+
+    // Fix Issue 3: Smoothed Snapshot Interpolation to eliminate P2P stutter
+    Vector2 InterpolateNetworkPosition(float currentRenderTime) {
+        if (snapshotBuffer.size() < 2) {
+            return snapshotBuffer.empty() ? Vector2{ 0, 0 } : snapshotBuffer.back().playerPos;
+        }
+
+        float targetTime = currentRenderTime - renderDelaySeconds;
+
+        // Find surrounding snapshots
+        for (size_t i = 0; i < snapshotBuffer.size() - 1; ++i) {
+            const auto& s0 = snapshotBuffer[i];
+            const auto& s1 = snapshotBuffer[i + 1];
+
+            if (s0.timestamp <= targetTime && targetTime <= s1.timestamp) {
+                float factor = (targetTime - s0.timestamp) / (s1.timestamp - s0.timestamp);
+                return Vector2Lerp(s0.playerPos, s1.playerPos, Clamp(factor, 0.0f, 1.0f));
+            }
+        }
+
+        return snapshotBuffer.back().playerPos;
+    }
+
+    void PushNetworkSnapshot(uint32_t seq, float time, Vector2 pos, float hp) {
+        snapshotBuffer.push_back({ seq, time, pos, hp });
+        if (snapshotBuffer.size() > MAX_SNAPSHOT_BUFFER_SIZE) {
+            snapshotBuffer.pop_front();
+        }
+    }
+
+    // Fix Issue 4: Safely mute audio stream when window/tab loses focus to prevent underruns
+    void HandleAudioFocusCheck() {
+        if (IsWindowMinimized()) {
+            SetMasterVolume(0.0f);
+        }
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DialogueAndTownSystem.h"
+#include "AudioManager.h"
+#include "ClassAndComboSystem.h"
+#include "EngineBugFixes.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Bug Fixes & Stability Update");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    EngineBugFixesManager bugFixes;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    bugFixes.InitEnginePatches();
+
+    player.pos = { 640.0f, 360.0f };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        Vector2 mousePos = GetMousePosition();
+
+        // 1. Focus Loss Check (Fixes Audio Underuns)
+        bugFixes.HandleFocusCheck();
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+            classMgr.TriggerAttack(player.pos, aimDir);
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+
+        // 2. Memory Leak Mitigation (Enforces Hard Particle Limits)
+        bugFixes.SanitizeParticlePool(particles.particles, 1000);
+
+        cameraMgr.Update(player.pos, player.pos, false, dt);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, GetScreenWidth(), GetScreenHeight());
+
+        // HUD & Overlays
+        player.DrawHUD();
+        classMgr.DrawClassAndAbilityHUD(GetScreenWidth(), GetScreenHeight());
+
+        DrawText("STABILITY PATCH 1.0.1 ACTIVE", 15, 15, 11, LIME);
+        DrawText(TextFormat("Particles Sanitized: %d / 1000", (int)particles.particles.size()), 15, 32, 10, LIGHTGRAY);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
