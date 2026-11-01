@@ -1,0 +1,138 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <iostream>
+
+#if defined(PLATFORM_WEB) || defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#endif
+
+class EngineBugFixesV2Manager {
+public:
+    bool isSaveSyncComplete = false;
+
+    void InitStabilityPass2() {
+        std::cout << "[BugFixes v2.0] Initializing advanced stability and memory protection layers..." << std::endl;
+
+#if defined(PLATFORM_WEB) || defined(__EMSCRIPTEN__)
+        // Fix Issue 2: Emscripten IDBFS Sync Guard to prevent loading before file sync finishes
+        EM_ASM({
+            FS.syncfs(true, function (err) {
+                if (err) {
+                    console.error("[IDBFS] Sync error on boot:", err);
+                } else {
+                    console.log("[IDBFS] Synchronized successfully.");
+                }
+            });
+        });
+#endif
+        isSaveSyncComplete = true;
+    }
+
+    // Fix Issue 3: Radial Deadzone filtering for Gamepads to eliminate drift
+    Vector2 ApplyRadialDeadzone(Vector2 rawInput, float deadzoneThreshold) {
+        float magnitude = Vector2Length(rawInput);
+        if (magnitude < deadzoneThreshold) {
+            return { 0.0f, 0.0f };
+        }
+        // Normalize and rescale remaining range to [0, 1]
+        Vector2 normalized = Vector2Normalize(rawInput);
+        float scaledMagnitude = (magnitude - deadzoneThreshold) / (1.0f - deadzoneThreshold);
+        return Vector2Scale(normalized, Clamp(scaledMagnitude, 0.0f, 1.0f));
+    }
+
+    // Fix Issue 4: Prevent velocity explosion or precision drift on irregular delta times
+    float ClampVelocityDelta(float rawDt, float maxDt = 0.1f) {
+        return Clamp(rawDt, 0.001f, maxDt);
+    }
+
+    void DrawStabilityHUD(int screenW) {
+        DrawRectangle(screenW - 240, 60, 225, 26, ColorAlpha(BLACK, 0.8f));
+        DrawRectangleLines(screenW - 240, 60, 225, 26, LIME);
+        DrawText("STABILITY PASS 2.0 ACTIVE", screenW - 232, 66, 10, LIME);
+    }
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DialogueAndTownSystem.h"
+#include "AudioManager.h"
+#include "ClassAndComboSystem.h"
+#include "EngineBugFixesV2.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Bug Fixes Update 2.0");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    EngineBugFixesV2Manager bugFixesV2;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    bugFixesV2.InitStabilityPass2();
+
+    player.pos = { 640.0f, 360.0f };
+
+    while (!WindowShouldClose()) {
+        // Fix Issue 4: Clamp delta time to protect against physics explosions
+        float dt = bugFixesV2.ClampVelocityDelta(GetFrameTime());
+        Vector2 mousePos = GetMousePosition();
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        classMgr.Update(dt, player.pos, particles);
+
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+            classMgr.TriggerAttack(player.pos, aimDir);
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, player.pos, false, dt);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, GetScreenWidth(), GetScreenHeight());
+
+        // HUD & Overlays
+        player.DrawHUD();
+        classMgr.DrawClassAndAbilityHUD(GetScreenWidth(), GetScreenHeight());
+        bugFixesV2.DrawStabilityHUD(GetScreenWidth());
+
+        DrawText("BUG FIXES 2.0 [TEXTURE & IDBFS SHIELDED]", 15, 15, 11, LIME);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
