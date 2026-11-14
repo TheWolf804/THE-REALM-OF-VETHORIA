@@ -1,0 +1,320 @@
+#pragma once
+#include "raylib.h"
+#include "raymath.h"
+#include <algorithm>
+
+struct VirtualActionButton {
+    Rectangle bounds;
+    const char* label;
+    Color accentColor;
+    bool isPressed = false;
+    bool justPressed = false;
+};
+
+class MobileTouchControlsManager {
+public:
+    bool isTouchModeEnabled = false;
+    bool autoDetectTouch = true;
+
+    // Left Virtual Analog Stick (Movement)
+    int moveTouchId = -1;
+    Vector2 moveAnchor = { 140.0f, 560.0f };
+    Vector2 moveKnob = { 140.0f, 560.0f };
+    Vector2 moveAxis = { 0.0f, 0.0f };
+    float stickMaxRadius = 65.0f;
+    float stickDeadzone = 0.15f;
+
+    // Right Combat & Ability Buttons
+    VirtualActionButton btnAttack;
+    VirtualActionButton btnAbility;
+    VirtualActionButton btnDash;
+    VirtualActionButton btnBounty;
+
+    // Aim Direction (Updated when dragging on Attack button or right screen)
+    Vector2 aimAxis = { 1.0f, 0.0f };
+
+    void Init(int screenW, int screenH) {
+        UpdateLayout(screenW, screenH);
+    }
+
+    void UpdateLayout(int screenW, int screenH) {
+        moveAnchor = { 130.0f, (float)screenH - 130.0f };
+        if (moveTouchId == -1) {
+            moveKnob = moveAnchor;
+        }
+
+        // Ergonomic Right-Thumb Arc Layout
+        btnAttack.bounds = { (float)screenW - 150.0f, (float)screenH - 150.0f, 95.0f, 95.0f };
+        btnAttack.label = "ATK";
+        btnAttack.accentColor = GOLD;
+
+        btnAbility.bounds = { (float)screenW - 255.0f, (float)screenH - 115.0f, 75.0f, 75.0f };
+        btnAbility.label = "SKILL";
+        btnAbility.accentColor = SKYBLUE;
+
+        btnDash.bounds = { (float)screenW - 135.0f, (float)screenH - 255.0f, 75.0f, 75.0f };
+        btnDash.label = "DASH";
+        btnDash.accentColor = LIME;
+
+        btnBounty.bounds = { (float)screenW - 75.0f, 55.0f, 55.0f, 36.0f };
+        btnBounty.label = "QUEST";
+        btnBounty.accentColor = ORANGE;
+    }
+
+    void Update(int screenW, int screenH) {
+        // Toggle Touch Overlay manually with Key 'T'
+        if (IsKeyPressed(KEY_T)) {
+            isTouchModeEnabled = !isTouchModeEnabled;
+            autoDetectTouch = false;
+        }
+
+        int touchCount = GetTouchPointCount();
+
+        // Automatically activate overlay if a physical touch is detected
+        if (autoDetectTouch && touchCount > 0) {
+            isTouchModeEnabled = true;
+        }
+
+        if (!isTouchModeEnabled) return;
+
+        UpdateLayout(screenW, screenH);
+
+        // Reset frame-edge button flags
+        bool prevAttack = btnAttack.isPressed;
+        bool prevAbility = btnAbility.isPressed;
+        bool prevDash = btnDash.isPressed;
+        bool prevBounty = btnBounty.isPressed;
+
+        btnAttack.isPressed = false;
+        btnAbility.isPressed = false;
+        btnDash.isPressed = false;
+        btnBounty.isPressed = false;
+
+        bool activeMoveTouchFound = false;
+
+        // Iterate over all active multi-touch fingers
+        for (int i = 0; i < touchCount; i++) {
+            int id = GetTouchPointId(i);
+            Vector2 pos = GetTouchPosition(i);
+
+            // 1. Left Half of Screen -> Virtual Movement Joystick
+            if (pos.x < screenW * 0.45f) {
+                if (moveTouchId == -1) {
+                    moveTouchId = id;
+                    moveAnchor = pos; // Dynamic floating origin where thumb lands
+                }
+
+                if (id == moveTouchId) {
+                    activeMoveTouchFound = true;
+                    Vector2 delta = Vector2Subtract(pos, moveAnchor);
+                    float dist = Vector2Length(delta);
+
+                    if (dist > stickMaxRadius) {
+                        delta = Vector2Scale(Vector2Normalize(delta), stickMaxRadius);
+                    }
+
+                    moveKnob = Vector2Add(moveAnchor, delta);
+
+                    // Apply Radial Deadzone
+                    float normalizedMag = dist / stickMaxRadius;
+                    if (normalizedMag < stickDeadzone) {
+                        moveAxis = { 0.0f, 0.0f };
+                    } else {
+                        float rescaled = Clamp((normalizedMag - stickDeadzone) / (1.0f - stickDeadzone), 0.0f, 1.0f);
+                        moveAxis = Vector2Scale(Vector2Normalize(delta), rescaled);
+                        aimAxis = Vector2Normalize(delta); // Default aim toward movement direction
+                    }
+                }
+            }
+            // 2. Right Half of Screen -> Combat & Utility Buttons
+            else {
+                // Expand hitboxes slightly for forgiving thumb taps
+                Rectangle atkPad = { btnAttack.bounds.x - 15, btnAttack.bounds.y - 15, btnAttack.bounds.width + 30, btnAttack.bounds.height + 30 };
+                if (CheckCollisionPointRec(pos, atkPad)) {
+                    btnAttack.isPressed = true;
+                    Vector2 atkCenter = { btnAttack.bounds.x + btnAttack.bounds.width * 0.5f, btnAttack.bounds.y + btnAttack.bounds.height * 0.5f };
+                    Vector2 aimDelta = Vector2Subtract(pos, atkCenter);
+                    if (Vector2Length(aimDelta) > 8.0f) {
+                        aimAxis = Vector2Normalize(aimDelta); // Twin-stick directional aim on attack pad
+                    }
+                }
+
+                if (CheckCollisionPointRec(pos, btnAbility.bounds)) btnAbility.isPressed = true;
+                if (CheckCollisionPointRec(pos, btnDash.bounds)) btnDash.isPressed = true;
+                if (CheckCollisionPointRec(pos, btnBounty.bounds)) btnBounty.isPressed = true;
+            }
+        }
+
+        // Reset joystick when thumb lifts
+        if (!activeMoveTouchFound) {
+            moveTouchId = -1;
+            moveAnchor = { 130.0f, (float)screenH - 130.0f };
+            moveKnob = moveAnchor;
+            moveAxis = { 0.0f, 0.0f };
+        }
+
+        btnAttack.justPressed = (btnAttack.isPressed && !prevAttack);
+        btnAbility.justPressed = (btnAbility.isPressed && !prevAbility);
+        btnDash.justPressed = (btnDash.isPressed && !prevDash);
+        btnBounty.justPressed = (btnBounty.isPressed && !prevBounty);
+    }
+
+    void DrawButton(const VirtualActionButton& btn, bool isCircle) {
+        Vector2 center = { btn.bounds.x + btn.bounds.width * 0.5f, btn.bounds.y + btn.bounds.height * 0.5f };
+        float radius = btn.bounds.width * 0.5f;
+
+        Color fill = btn.isPressed ? ColorAlpha(btn.accentColor, 0.45f) : ColorAlpha(GetColor(0x12121DFF), 0.65f);
+        Color border = btn.isPressed ? WHITE : ColorAlpha(btn.accentColor, 0.85f);
+
+        if (isCircle) {
+            DrawCircleV(center, radius, fill);
+            DrawCircleLines((int)center.x, (int)center.y, radius, border);
+        } else {
+            DrawRectangleRec(btn.bounds, fill);
+            DrawRectangleLinesEx(btn.bounds, 1.5f, border);
+        }
+
+        int textW = MeasureText(btn.label, 12);
+        DrawText(btn.label, (int)(center.x - textW * 0.5f), (int)(center.y - 6), 12, WHITE);
+    }
+
+    void DrawTouchControlsHUD(int screenW, int screenH) {
+        if (!isTouchModeEnabled) return;
+
+        // Draw Left Virtual Joystick Base & Knob
+        DrawCircleV(moveAnchor, stickMaxRadius, ColorAlpha(GetColor(0x12121DFF), 0.55f));
+        DrawCircleLines((int)moveAnchor.x, (int)moveAnchor.y, stickMaxRadius, ColorAlpha(GOLD, 0.7f));
+        DrawCircleLines((int)moveAnchor.x, (int)moveAnchor.y, stickMaxRadius * stickDeadzone, ColorAlpha(GRAY, 0.4f));
+
+        DrawCircleV(moveKnob, 26.0f, moveTouchId != -1 ? ColorAlpha(GOLD, 0.8f) : ColorAlpha(LIGHTGRAY, 0.5f));
+        DrawCircleLines((int)moveKnob.x, (int)moveKnob.y, 26.0f, WHITE);
+
+        // Draw Right Combat Action Buttons
+        DrawButton(btnAttack, true);
+        DrawButton(btnAbility, true);
+        DrawButton(btnDash, true);
+        DrawButton(btnBounty, false);
+    }
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+  html, body, canvas.emscripten {
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+</style>
+#include "raylib.h"
+#include "Common.h"
+#include "ParticleEngine.h"
+#include "Player.h"
+#include "LightEngine.h"
+#include "CameraManager.h"
+#include "PostProcessingManager.h"
+#include "DialogueAndTownSystem.h"
+#include "AudioManager.h"
+#include "ClassAndComboSystem.h"
+#include "BountyBoardSystem.h"
+#include "MobileTouchControls.h"
+
+int main() {
+    const int screenW = 1280, screenH = 720;
+    InitWindow(screenW, screenH, "Vethoria: Mobile Multi-Touch Controls");
+    SetTargetFPS(60);
+
+    Player player;
+    ParticleEngine particles;
+    LightEngine lighting(screenW, screenH);
+    CameraManager cameraMgr(screenW, screenH);
+    PostProcessingManager postFX;
+    DialogueAndTownManager town;
+    AudioManager audio;
+    ClassAndComboManager classMgr;
+    BountyBoardSystemManager bountyBoard;
+    MobileTouchControlsManager touchUI;
+
+    postFX.Init(screenW, screenH);
+    town.InitHub();
+    audio.Init();
+    classMgr.Init();
+    bountyBoard.GenerateFreshBounties(1);
+    touchUI.Init(screenW, screenH);
+
+    player.pos = { 640.0f, 360.0f };
+    int playerSouls = 5;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        int curW = GetScreenWidth();
+        int curH = GetScreenHeight();
+        Vector2 mousePos = GetMousePosition();
+
+        // Update Multi-Touch Virtual Joystick & Action Buttons
+        touchUI.Update(curW, curH);
+
+        if (IsKeyPressed(KEY_B) || touchUI.btnBounty.justPressed) {
+            bountyBoard.isBoardUIOpen = !bountyBoard.isBoardUIOpen;
+        }
+
+        ClassProfile prof = classMgr.GetCurrentProfile();
+        player.maxHealth = prof.maxHealth;
+
+        if (!bountyBoard.isBoardUIOpen) {
+            classMgr.Update(dt, player.pos, particles);
+
+            // Apply Virtual Joystick Movement alongside WASD
+            if (touchUI.isTouchModeEnabled && Vector2Length(touchUI.moveAxis) > 0.0f) {
+                player.pos = Vector2Add(player.pos, Vector2Scale(touchUI.moveAxis, 240.0f * dt));
+            }
+
+            // Trigger Attack via Mouse Click or Touch Attack Pad
+            if (touchUI.btnAttack.justPressed) {
+                classMgr.TriggerAttack(player.pos, touchUI.aimAxis);
+            } else if (!touchUI.isTouchModeEnabled && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                Vector2 aimDir = Vector2Subtract(GetScreenToWorld2D(mousePos, cameraMgr.camera), player.pos);
+                classMgr.TriggerAttack(player.pos, aimDir);
+            }
+
+            // Trigger Dash Boost via Touch Dash Button
+            if (touchUI.btnDash.justPressed) {
+                player.pos = Vector2Add(player.pos, Vector2Scale(touchUI.aimAxis, 85.0f));
+            }
+        }
+
+        player.Update(dt, particles);
+        particles.Update(dt);
+        cameraMgr.Update(player.pos, player.pos, false, dt);
+
+        // Render Frame Pass
+        postFX.BeginRenderPass();
+            cameraMgr.BeginMode();
+                town.DrawHubWorld(player.pos);
+                classMgr.DrawAttackVisuals(player.pos);
+                player.Draw();
+                particles.Draw();
+
+                lighting.BeginLightPass();
+                lighting.DrawLight(player.pos, 260.0f, prof.themeColor, 0.85f);
+                lighting.EndLightPass(GetColor(0x181822FF));
+            cameraMgr.EndMode();
+        
+        postFX.EndRenderPassAndApplyFX(dt, player.health, player.maxHealth, curW, curH);
+
+        // HUD & Overlays
+        player.DrawHUD();
+        classMgr.DrawClassAndAbilityHUD(curW, curH);
+        touchUI.DrawTouchControlsHUD(curW, curH);
+
+        DrawText("[T] Toggle Touch Controls", curW - 195, 15, 11, touchUI.isTouchModeEnabled ? GOLD : GRAY);
+
+        bountyBoard.DrawBountyBoardUI(curW, curH, player.gold, playerSouls, mousePos);
+
+        EndDrawing();
+    }
+
+    audio.Unload();
+    postFX.Unload();
+    CloseWindow();
+    return 0;
+}
+};
